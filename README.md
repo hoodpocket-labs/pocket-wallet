@@ -1,2 +1,99 @@
-# pocket-wallet
-Wallet for AI Agents on Robinhood
+# hoodpocket
+
+**A side-pocket trading wallet for AI agents on Robinhood Chain.**
+
+Give your AI agent a small, separate wallet it can trade from 24/7 — with guardrails you set. hoodpocket is an [MCP](https://modelcontextprotocol.io) server, so any MCP-capable agent (Claude, ChatGPT, Cursor, …) can trade tokenized stocks and other tokens on [Robinhood Chain](https://robinhoodchain.blockscout.com) through it. Self-custodial: the key is yours, the funds are yours.
+
+```
+┌─────────────────┐    MCP     ┌──────────────────────────────┐   txs    ┌───────────────────┐
+│    AI agent     │ ─────────► │          hoodpocket          │ ───────► │  Robinhood Chain  │
+│  (Claude, ...)  │            │ classify → guardrails → sign │          │    Uniswap V4     │
+└─────────────────┘            └──────────────────────────────┘          └───────────────────┘
+```
+
+## No hardcoded token list
+
+Robinhood Chain is an open chain: besides the ~95 official stock tokens there are thousands of memecoins and utility tokens — including fakes. The explorer lists a token with the symbol `USDC` whose real name is "UpSide Down Cat", several fake "Apple" tokens, and a counterfeit "Global Dollar". Names are free to fake, so hoodpocket never trusts them.
+
+Instead, the agent discovers tokens dynamically (`search_tokens`) and every address is classified into a **trust tier** using signals that cost money to fake:
+
+| Tier | Signals | Default policy |
+|---|---|---|
+| **official** | runtime bytecode matches the official Robinhood stock-token fingerprint (identical across AAPL, NVDA, TSLA, GOOGL, …) + deployer cross-check + live USDG pool | $500/trade |
+| **established** | 1000+ holders, indexed price feed, live Uniswap V4 liquidity against USDG | $100/trade |
+| **unknown** | everything else | blocked |
+
+On top of tiers sits one **rolling 24h USD budget** for total turnover, valued at trade time via the Uniswap V4 quoter. All thresholds are yours to change in `hoodpocket.config.json`.
+
+## How it stays safe
+
+- **Separate pocket.** A fresh key funded only with what you're willing to let the agent trade. Worst case = the pocket, nothing more. (Same philosophy as Robinhood's own agentic accounts: isolation + limits.)
+- **Guardrails before signatures.** Tier policy, per-trade USD limit, and daily budget are checked before anything is signed. Blocked trades cost nothing and return a readable reason the agent can adapt to.
+- **No withdrawals.** There is deliberately no "send to address" tool — funds can rotate between tokens inside the wallet but can't leave it. Only you can move them out, with the key.
+- **Names are never identity.** Trades reference contract addresses; the fake-USDC problem can't bite.
+- **Full history.** Every trade is recorded locally with explorer links (`get_trade_history`).
+
+## Tools exposed to the agent
+
+| Tool | What it does |
+|---|---|
+| `search_tokens` | Find tokens by name/symbol (stocks, memes, utility tokens) |
+| `get_token_info` | Classify an address into a trust tier, with reasons |
+| `quote` | Executable price for a token ↔ USDG swap (best V4 pool) |
+| `swap` | Exact-input swap via Uniswap V4 Universal Router, guardrails enforced |
+| `get_portfolio` | ETH, USDG, and previously traded positions |
+| `get_limits` | Current policy + how much of the daily budget is used |
+| `get_trade_history` | Recent trades with tx links |
+
+## Verified chain constants
+
+All pinned in [src/chain.ts](src/chain.ts), verified on-chain and cross-checked against the Uniswap deployment docs and Blockscout (2026-07-11):
+
+| What | Address |
+|---|---|
+| RPC | `https://rpc.mainnet.chain.robinhood.com` (chain id 4663) |
+| Uniswap V4 PoolManager | `0x8366a39cc670b4001a1121b8f6a443a643e40951` |
+| Universal Router | `0x8876789976decbfcbbbe364623c63652db8c0904` |
+| V4 Quoter | `0x8dc178efb8111bb0973dd9d722ebeff267c98f94` |
+| StateView | `0xf3334192d15450cdd385c8b70e03f9a6bd9e673b` |
+| Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` |
+| USDG (Global Dollar) | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
+
+Stock-token liquidity lives on **Uniswap V4** (the PoolManager is the largest holder of the official stock tokens); e.g. AAPL/USDG has 7 live pools across fee tiers.
+
+## Setup
+
+```bash
+npm install && npm run build
+
+# 1. Create the pocket wallet — a FRESH key (cast wallet new, or any wallet app).
+#    Never reuse a key that guards real savings.
+cp .env.example .env                                       # put the key here
+
+# 2. Tune the policy (optional — sensible defaults apply)
+cp hoodpocket.config.example.json hoodpocket.config.json
+
+# 3. Fund the pocket: a little ETH for gas + USDG to trade, sent to the wallet address.
+
+# 4. Connect your agent
+claude mcp add hoodpocket -- node /path/to/hoodpocket/dist/index.js
+```
+
+Then try: *"Search for the official NVDA stock token, verify its tier, quote 50 USDG, and buy if the price looks fair."*
+
+## Trust model (honest version)
+
+Guardrails are enforced by this server's code before signing — not by the blockchain. If the machine running hoodpocket is compromised, the key is only as safe as that machine: keep the pocket small. Tier classification makes scams expensive, not impossible — copied bytecode plus real seeded liquidity could still fool the "official" tier when the explorer's creator-check is unavailable. Treat tiers as a strong filter, not a guarantee.
+
+## Roadmap
+
+- [ ] Native ETH pairs (currently all routes go through USDG)
+- [ ] Multi-hop routing for token→token trades
+- [ ] Per-pair pool depth (currently a chain-wide upper bound is used as the liquidity floor)
+- [ ] Position tracking with cost basis and P&L
+- [ ] Optional hosted key management (Privy / Turnkey)
+- [ ] Vault mode: on-chain enforcement via an ERC-4337 smart account for larger balances
+
+## Disclaimer
+
+Experimental software, not audited, not financial advice. Fund the pocket only with what you can afford to lose. hoodpocket is an independent project, not affiliated with or endorsed by Robinhood.

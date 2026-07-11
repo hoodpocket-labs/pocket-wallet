@@ -1,0 +1,14 @@
+{
+  "rpcUrl": "https://rpc.mainnet.chain.robinhood.com",
+  "policy": {
+    "dailyBudgetUsd": 1000,
+    "tiers": {
+      "official": { "enabled": true, "maxPerTradeUsd": 500 },
+      "established": { "enabled": true, "maxPerTradeUsd": 100 },
+      "unknown": { "enabled": false, "maxPerTradeUsd": 0 }
+    },
+    "minHolders": 1000,
+    "minPoolUsdg": 10000,
+    "denylist": []
+  }
+}
