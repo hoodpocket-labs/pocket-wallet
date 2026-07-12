@@ -16,7 +16,7 @@ export interface Policy {
     official: TierPolicy;
     /** Tokens with real liquidity, 1000+ holders, and an indexed price feed. */
     established: TierPolicy;
-    /** Everything else. Off by default — this is where the scams live. */
+    /** Everything else. Off by default; this is where the scams live. */
     unknown: TierPolicy;
   };
   /** Established-tier threshold: minimum holder count. */
@@ -64,7 +64,7 @@ function loadConfig(): PocketConfig {
 const pk = process.env.HOODPOCKET_PRIVATE_KEY;
 if (!pk) {
   throw new Error(
-    "HOODPOCKET_PRIVATE_KEY is not set. Generate a fresh key for the pocket wallet — never reuse your main wallet's key."
+    "HOODPOCKET_PRIVATE_KEY is not set. Generate a fresh key for the pocket wallet. Never reuse your main wallet's key."
   );
 }
 

@@ -65,7 +65,7 @@ export function checkTradeAllowed(tier: Tier, tradeUsd: number, tierReasons: str
   const remaining = config.policy.dailyBudgetUsd - spent;
   if (tradeUsd > remaining) {
     throw new Error(
-      `Trade blocked: daily budget is $${config.policy.dailyBudgetUsd}, ~$${spent.toFixed(2)} already used in the last 24h — only ~$${Math.max(0, remaining).toFixed(2)} remaining.`
+      `Trade blocked: daily budget is $${config.policy.dailyBudgetUsd}, ~$${spent.toFixed(2)} already used in the last 24h, only ~$${Math.max(0, remaining).toFixed(2)} remaining.`
     );
   }
 }

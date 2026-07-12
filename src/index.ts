@@ -131,7 +131,7 @@ server.registerTool(
     const p = await profileToken(address);
     const livePools = p.pools.filter((pool) => pool.liquidity > 0n);
     const lines = [
-      `${p.symbol} — ${p.name}`,
+      `${p.symbol} · ${p.name}`,
       `address: ${p.address}`,
       `decimals: ${p.decimals}`,
       `tier: ${p.tier.toUpperCase()}`,
@@ -210,7 +210,7 @@ server.registerTool(
       );
     }
 
-    // Value the trade in USD, then run the guardrails — before any signing.
+    // Value the trade in USD, then run the guardrails, before any signing.
     const tradeUsd = await usdValue(pair.tokenIn, amountIn, pair.inDecimals, pair.profilePools);
     checkTradeAllowed(pair.tier, tradeUsd, pair.tierReasons);
 

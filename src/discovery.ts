@@ -48,7 +48,7 @@ const initializeEvent = parseAbiItem(
   "event Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)"
 );
 
-// ─── Blockscout (indexer — treated as best-effort, never trusted alone) ───────
+// ─── Blockscout (indexer: best-effort, never trusted alone) ──────────────────
 
 interface BlockscoutToken {
   address_hash: string;
@@ -174,7 +174,7 @@ export async function profileToken(rawAddress: string): Promise<TokenProfile> {
   const cached = profileCache.get(key);
   if (cached && Date.now() - cached.at < PROFILE_TTL_MS) return cached.profile;
 
-  // On-chain identity — never trust the indexer for these.
+  // On-chain identity. Never trust the indexer for these.
   const [symbol, name, decimals, code] = await Promise.all([
     publicClient.readContract({ address, abi: erc20Abi, functionName: "symbol" }),
     publicClient.readContract({ address, abi: erc20Abi, functionName: "name" }),

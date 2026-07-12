@@ -12,7 +12,7 @@ export const CHAIN_ID = 4663;
 export const DEFAULT_RPC = "https://rpc.mainnet.chain.robinhood.com";
 export const BLOCKSCOUT = "https://robinhoodchain.blockscout.com";
 
-// Uniswap V4 (where stock-token liquidity lives — the PoolManager is the
+// Uniswap V4 (where stock-token liquidity lives: the PoolManager is the
 // largest holder of the official stock tokens)
 export const POOL_MANAGER: Address = getAddress("0x8366a39cc670b4001a1121b8f6a443a643e40951");
 export const UNIVERSAL_ROUTER: Address = getAddress("0x8876789976decbfcbbbe364623c63652db8c0904");
@@ -20,13 +20,13 @@ export const V4_QUOTER: Address = getAddress("0x8dc178efb8111bb0973dd9d722ebeff2
 export const STATE_VIEW: Address = getAddress("0xf3334192d15450cdd385c8b70e03f9a6bd9e673b");
 export const PERMIT2: Address = getAddress("0x000000000022D473030F116dDEE9F6B43aC78BA3");
 
-// USDG (Global Dollar, Paxos) — the canonical stablecoin. 6 decimals, ~12k
+// USDG (Global Dollar, Paxos), the canonical stablecoin. 6 decimals, ~12k
 // holders. Beware: several scam tokens also use the USDG name.
 export const USDG: Address = getAddress("0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168");
 export const USDG_DECIMALS = 6;
 
 // Native ETH is a first-class V4 currency (address zero). Memecoins (Noxa
-// launches) and utility tokens (Virtuals) overwhelmingly pair against it —
+// launches) and utility tokens (Virtuals) overwhelmingly pair against it;
 // e.g. CASHCAT has ~96 native-ETH pools and zero USDG pools.
 export const NATIVE: Address = "0x0000000000000000000000000000000000000000";
 
