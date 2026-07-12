@@ -2,12 +2,12 @@ import { keccak256, parseAbi, parseAbiItem, getAddress } from "viem";
 import type { Address, Hex } from "viem";
 import {
   BLOCKSCOUT,
+  NATIVE,
   OFFICIAL_ISSUER,
   OFFICIAL_STOCK_CODEHASH,
   POOL_MANAGER,
+  QUOTES,
   STATE_VIEW,
-  USDG,
-  USDG_DECIMALS,
   erc20Abi,
   publicClient,
 } from "./chain.js";
@@ -23,8 +23,9 @@ export interface PoolInfo {
   tickSpacing: number;
   hooks: Address;
   liquidity: bigint;
-  /** USDG sitting in the pool (rough depth signal), human units. */
-  usdgDepth: number;
+  /** The quote side of this pool (NATIVE for ETH pairs, USDG for stable pairs). */
+  quote: Address;
+  quoteSymbol: string;
 }
 
 export interface TokenProfile {
@@ -98,13 +99,13 @@ function sortPair(a: Address, b: Address): [Address, Address] {
   return BigInt(a) < BigInt(b) ? [a, b] : [b, a];
 }
 
-/** All USDG-paired V4 pools for a token, deepest first. */
-export async function findUsdgPools(token: Address): Promise<PoolInfo[]> {
-  const key = token.toLowerCase();
+/** All V4 pools between two specific currencies, deepest first. */
+export async function findPairPools(tokenA: Address, quote: Address): Promise<PoolInfo[]> {
+  const [currency0, currency1] = sortPair(tokenA, quote);
+  const key = `${currency0}:${currency1}`.toLowerCase();
   const cached = poolCache.get(key);
   if (cached && Date.now() - cached.at < POOL_TTL_MS) return cached.pools;
 
-  const [currency0, currency1] = sortPair(token, USDG);
   const logs = await publicClient.getLogs({
     address: POOL_MANAGER,
     event: initializeEvent,
@@ -112,6 +113,7 @@ export async function findUsdgPools(token: Address): Promise<PoolInfo[]> {
     fromBlock: 0n,
   });
 
+  const quoteMeta = QUOTES.find((q) => q.address.toLowerCase() === quote.toLowerCase());
   const pools: PoolInfo[] = [];
   for (const log of logs) {
     const { id, fee, tickSpacing, hooks } = log.args;
@@ -130,31 +132,24 @@ export async function findUsdgPools(token: Address): Promise<PoolInfo[]> {
       tickSpacing: Number(tickSpacing),
       hooks,
       liquidity,
-      usdgDepth: 0, // filled below
+      quote,
+      quoteSymbol: quoteMeta?.symbol ?? quote,
     });
-  }
-
-  // Depth signal: how much USDG the PoolManager holds is chain-wide, not per-pool,
-  // so approximate per-pool depth by share of total liquidity across this pair.
-  const totalLiq = pools.reduce((s, p) => s + p.liquidity, 0n);
-  if (totalLiq > 0n) {
-    const pmUsdg = await publicClient.readContract({
-      address: USDG,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [POOL_MANAGER],
-    });
-    // NOTE: PoolManager's USDG balance spans ALL pools on the chain — this is an
-    // upper bound, not a per-pair figure. Used only as a sanity floor via minPoolUsdg.
-    const pmUsdgHuman = Number(pmUsdg) / 10 ** USDG_DECIMALS;
-    for (const p of pools) {
-      p.usdgDepth = p.liquidity === 0n ? 0 : pmUsdgHuman;
-    }
   }
 
   pools.sort((a, b) => (b.liquidity > a.liquidity ? 1 : b.liquidity < a.liquidity ? -1 : 0));
   poolCache.set(key, { at: Date.now(), pools });
   return pools;
+}
+
+/** Pools for a token against every supported quote currency (ETH first, then USDG). */
+export async function findQuotePools(token: Address): Promise<PoolInfo[]> {
+  const perQuote = await Promise.all(
+    QUOTES.filter((q) => q.address.toLowerCase() !== token.toLowerCase()).map((q) =>
+      findPairPools(token, q.address)
+    )
+  );
+  return perQuote.flat();
 }
 
 // ─── Tier classification ──────────────────────────────────────────────────────
@@ -166,12 +161,15 @@ const PROFILE_TTL_MS = 10 * 60 * 1000;
  * Classify a token using signals that cost money to fake:
  *  - official:    runtime bytecode hash matches the official Robinhood stock-token
  *                 fingerprint (plus a creator cross-check when the indexer responds,
- *                 and at least one live USDG pool)
- *  - established: 1000+ holders, an indexed price feed, and live USDG liquidity
+ *                 and at least one live quote pool)
+ *  - established: 1000+ holders, an indexed price feed, and live ETH or USDG liquidity
  *  - unknown:     everything else (blocked by default policy)
  */
 export async function profileToken(rawAddress: string): Promise<TokenProfile> {
   const address = getAddress(rawAddress);
+  if (address === NATIVE) {
+    throw new Error("Native ETH is a quote currency, not a token to profile.");
+  }
   const key = address.toLowerCase();
   const cached = profileCache.get(key);
   if (cached && Date.now() - cached.at < PROFILE_TTL_MS) return cached.profile;
@@ -186,7 +184,7 @@ export async function profileToken(rawAddress: string): Promise<TokenProfile> {
   if (!code || code === "0x") throw new Error(`${address} has no contract code`);
   const codehash = keccak256(code);
 
-  const pools = await findUsdgPools(address);
+  const pools = await findQuotePools(address);
   const hasLivePool = pools.some((p) => p.liquidity > 0n);
 
   const info = await blockscout<BlockscoutToken>(`/tokens/${address}`);
@@ -199,7 +197,7 @@ export async function profileToken(rawAddress: string): Promise<TokenProfile> {
   if (codehash === OFFICIAL_STOCK_CODEHASH && hasLivePool) {
     tier = "official";
     reasons.push("bytecode matches official Robinhood stock-token fingerprint");
-    reasons.push("live USDG pool on Uniswap V4");
+    reasons.push("live quote pool on Uniswap V4");
     // Secondary check: creator address, when the explorer cooperates.
     const meta = await blockscout<{ creator_address_hash?: string }>(`/addresses/${address}`);
     if (meta?.creator_address_hash) {
@@ -221,9 +219,9 @@ export async function profileToken(rawAddress: string): Promise<TokenProfile> {
     tier = "established";
     reasons.push(`${holders} holders (>= ${config.policy.minHolders})`);
     reasons.push("indexed price feed");
-    reasons.push("live USDG pool on Uniswap V4");
+    reasons.push("live ETH or USDG pool on Uniswap V4");
   } else {
-    if (!hasLivePool) reasons.push("no live USDG pool on Uniswap V4");
+    if (!hasLivePool) reasons.push("no live ETH or USDG pool on Uniswap V4");
     if (holders !== null && holders < config.policy.minHolders) {
       reasons.push(`only ${holders} holders`);
     }

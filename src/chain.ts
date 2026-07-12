@@ -20,10 +20,21 @@ export const V4_QUOTER: Address = getAddress("0x8dc178efb8111bb0973dd9d722ebeff2
 export const STATE_VIEW: Address = getAddress("0xf3334192d15450cdd385c8b70e03f9a6bd9e673b");
 export const PERMIT2: Address = getAddress("0x000000000022D473030F116dDEE9F6B43aC78BA3");
 
-// USDG (Global Dollar, Paxos) — the canonical stablecoin and quote currency.
-// 6 decimals, ~12k holders. Beware: several scam tokens also use the USDG name.
+// USDG (Global Dollar, Paxos) — the canonical stablecoin. 6 decimals, ~12k
+// holders. Beware: several scam tokens also use the USDG name.
 export const USDG: Address = getAddress("0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168");
 export const USDG_DECIMALS = 6;
+
+// Native ETH is a first-class V4 currency (address zero). Memecoins (Noxa
+// launches) and utility tokens (Virtuals) overwhelmingly pair against it —
+// e.g. CASHCAT has ~96 native-ETH pools and zero USDG pools.
+export const NATIVE: Address = "0x0000000000000000000000000000000000000000";
+
+/** Quote currencies discovery searches against, in priority order. */
+export const QUOTES: Array<{ address: Address; symbol: string; decimals: number }> = [
+  { address: NATIVE, symbol: "ETH", decimals: 18 },
+  { address: USDG, symbol: "USDG", decimals: USDG_DECIMALS },
+];
 
 // Every official "X • Robinhood Token" stock token shares this exact runtime
 // bytecode hash (verified across AAPL, NVDA, TSLA, GOOGL). Used as a

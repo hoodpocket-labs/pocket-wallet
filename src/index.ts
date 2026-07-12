@@ -2,26 +2,106 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { formatUnits, getAddress, parseUnits } from "viem";
-import { BLOCKSCOUT, USDG, USDG_DECIMALS, account, erc20Abi, publicClient } from "./chain.js";
+import { formatUnits, getAddress, parseUnits, type Address } from "viem";
+import { BLOCKSCOUT, NATIVE, USDG, USDG_DECIMALS, account, erc20Abi, publicClient } from "./chain.js";
 import { config } from "./config.js";
-import { profileToken, searchTokens } from "./discovery.js";
+import { findPairPools, profileToken, searchTokens, type PoolInfo, type Tier } from "./discovery.js";
 import { checkTradeAllowed, recordTrade, spentUsdLast24h, tradeHistory } from "./guardrails.js";
-import { bestQuote, swapV4, usdValue } from "./v4.js";
+import { bestQuote, ethUsdPrice, isNative, swapV4, usdValue } from "./v4.js";
 
-const server = new McpServer({ name: "hoodpocket", version: "0.2.0" });
+const server = new McpServer({ name: "hoodpocket", version: "0.3.0" });
 
-function isUsdg(address: string): boolean {
-  return address.toLowerCase() === USDG.toLowerCase();
+function resolveCurrency(input: string): Address {
+  const upper = input.trim().toUpperCase();
+  if (upper === "ETH") return NATIVE;
+  if (upper === "USDG") return USDG;
+  return getAddress(input.trim());
+}
+
+function isQuoteCurrency(address: Address): boolean {
+  return isNative(address) || address.toLowerCase() === USDG.toLowerCase();
+}
+
+async function balanceOf(currency: Address): Promise<bigint> {
+  if (isNative(currency)) return publicClient.getBalance({ address: account.address });
+  return publicClient.readContract({
+    address: currency,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [account.address],
+  });
+}
+
+/**
+ * Resolve a trading pair. Exactly one side must be a quote currency (ETH or
+ * USDG), except the ETH/USDG pair itself which is always allowed.
+ */
+async function resolvePair(tokenInRaw: string, tokenOutRaw: string) {
+  const tokenIn = resolveCurrency(tokenInRaw);
+  const tokenOut = resolveCurrency(tokenOutRaw);
+  if (tokenIn.toLowerCase() === tokenOut.toLowerCase()) {
+    throw new Error("token_in and token_out are the same currency.");
+  }
+
+  // ETH <-> USDG: both sides are quotes, no token to profile.
+  if (isQuoteCurrency(tokenIn) && isQuoteCurrency(tokenOut)) {
+    const pools = await findPairPools(NATIVE, USDG);
+    return {
+      tokenIn,
+      tokenOut,
+      pools,
+      tier: "official" as Tier,
+      tierReasons: ["native ETH / USDG quote pair"],
+      inDecimals: isNative(tokenIn) ? 18 : USDG_DECIMALS,
+      outDecimals: isNative(tokenOut) ? 18 : USDG_DECIMALS,
+      inSymbol: isNative(tokenIn) ? "ETH" : "USDG",
+      outSymbol: isNative(tokenOut) ? "ETH" : "USDG",
+      profilePools: pools,
+    };
+  }
+
+  if (isQuoteCurrency(tokenIn) === isQuoteCurrency(tokenOut)) {
+    throw new Error(
+      "One side of the pair must be ETH or USDG (token-to-token routing is not supported yet)."
+    );
+  }
+
+  const quote = isQuoteCurrency(tokenIn) ? tokenIn : tokenOut;
+  const other = isQuoteCurrency(tokenIn) ? tokenOut : tokenIn;
+  const p = await profileToken(other);
+  const pairPools = p.pools.filter((pool) => pool.quote.toLowerCase() === quote.toLowerCase());
+  if (!pairPools.some((pool) => pool.liquidity > 0n)) {
+    const otherQuote = isNative(quote) ? "USDG" : "ETH";
+    const alt = p.pools.filter((pool) => pool.liquidity > 0n).length;
+    throw new Error(
+      `${p.symbol} has no live pool against ${isNative(quote) ? "ETH" : "USDG"}.` +
+        (alt > 0 ? ` Try quoting against ${otherQuote} instead.` : "")
+    );
+  }
+
+  const quoteDecimals = isNative(quote) ? 18 : USDG_DECIMALS;
+  const quoteSymbol = isNative(quote) ? "ETH" : "USDG";
+  return {
+    tokenIn,
+    tokenOut,
+    pools: pairPools,
+    tier: p.tier,
+    tierReasons: p.tierReasons,
+    inDecimals: isQuoteCurrency(tokenIn) ? quoteDecimals : p.decimals,
+    outDecimals: isQuoteCurrency(tokenOut) ? quoteDecimals : p.decimals,
+    inSymbol: isQuoteCurrency(tokenIn) ? quoteSymbol : p.symbol,
+    outSymbol: isQuoteCurrency(tokenOut) ? quoteSymbol : p.symbol,
+    profilePools: p.pools,
+  };
 }
 
 server.registerTool(
   "search_tokens",
   {
     description:
-      "Search tokens on Robinhood Chain by name or symbol (stock tokens, memecoins, utility tokens). Returns candidates with basic stats. IMPORTANT: names and symbols are freely fakeable on-chain — before trading, always run get_token_info on the address to see its trust tier.",
+      "Search tokens on Robinhood Chain by name or symbol: memecoins (Noxa launches), utility tokens (Virtuals), and tokenized stocks. Returns candidates with basic stats. IMPORTANT: names and symbols are freely fakeable on-chain. Before trading, always run get_token_info on the address to see its trust tier.",
     inputSchema: {
-      query: z.string().describe("Name or symbol, e.g. 'AAPL', 'Apple', 'HOODIE'"),
+      query: z.string().describe("Name or symbol, e.g. 'CASHCAT', 'HOODIE', 'AAPL'"),
     },
   },
   async ({ query }) => {
@@ -42,7 +122,7 @@ server.registerTool(
   "get_token_info",
   {
     description:
-      "Classify a token address into a trust tier (official / established / unknown) using on-chain signals: bytecode fingerprint vs official Robinhood stock tokens, deployer identity, live Uniswap V4 USDG liquidity, holders, and price feed. Trading policy depends on the tier.",
+      "Classify a token address into a trust tier (official / established / unknown) using on-chain signals: bytecode fingerprint vs official Robinhood stock tokens, deployer identity, live Uniswap V4 liquidity against ETH and USDG, holders, and price feed. Trading policy depends on the tier.",
     inputSchema: {
       address: z.string().describe("The token contract address (0x...)"),
     },
@@ -58,10 +138,13 @@ server.registerTool(
       `reasons: ${p.tierReasons.join("; ")}`,
       `holders: ${p.holders ?? "unknown"}`,
       `price: ${p.priceUsd !== null ? `~$${p.priceUsd}` : "no feed"}`,
-      `USDG pools (Uniswap V4): ${livePools.length} live / ${p.pools.length} total`,
+      `live pools (Uniswap V4): ${livePools.length} of ${p.pools.length}`,
       ...livePools
-        .slice(0, 3)
-        .map((pool) => `  fee ${pool.fee / 10000}% | liquidity ${pool.liquidity}`),
+        .slice(0, 5)
+        .map(
+          (pool) =>
+            `  vs ${pool.quoteSymbol} | fee ${pool.fee / 10000}% | liquidity ${pool.liquidity}`
+        ),
       `policy for this tier: ${JSON.stringify(config.policy.tiers[p.tier])}`,
     ];
     return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -72,32 +155,25 @@ server.registerTool(
   "quote",
   {
     description:
-      "Get the current executable price for swapping a token to/from USDG on Uniswap V4 (exact input, best pool). Use before swap to set expectations and detect thin liquidity.",
+      "Get the current executable price for a swap on Uniswap V4 (exact input, best pool). One side must be ETH or USDG. Use before swap to set expectations and detect thin liquidity.",
     inputSchema: {
-      token_in: z.string().describe("Address of the token to sell, or 'USDG'"),
-      token_out: z.string().describe("Address of the token to buy, or 'USDG'"),
-      amount_in: z.string().describe("Human-readable amount to sell, e.g. '100'"),
+      token_in: z.string().describe("'ETH', 'USDG', or a token address to sell"),
+      token_out: z.string().describe("'ETH', 'USDG', or a token address to buy"),
+      amount_in: z.string().describe("Human-readable amount to sell, e.g. '0.05'"),
     },
   },
   async ({ token_in, token_out, amount_in }) => {
-    const inAddr = token_in.toUpperCase() === "USDG" ? USDG : getAddress(token_in);
-    const outAddr = token_out.toUpperCase() === "USDG" ? USDG : getAddress(token_out);
-    if (isUsdg(inAddr) === isUsdg(outAddr)) {
-      throw new Error("One side of the pair must be USDG (v0.2 routes all trades through USDG).");
-    }
-    const other = isUsdg(inAddr) ? outAddr : inAddr;
-    const p = await profileToken(other);
-    const inDecimals = isUsdg(inAddr) ? USDG_DECIMALS : p.decimals;
-    const outDecimals = isUsdg(outAddr) ? USDG_DECIMALS : p.decimals;
-    const amountIn = parseUnits(amount_in, inDecimals);
-    const { pool, amountOut } = await bestQuote(p.pools, inAddr, amountIn);
+    const pair = await resolvePair(token_in, token_out);
+    const amountIn = parseUnits(amount_in, pair.inDecimals);
+    const { pool, amountOut } = await bestQuote(pair.pools, pair.tokenIn, amountIn);
+    const tradeUsd = await usdValue(pair.tokenIn, amountIn, pair.inDecimals, pair.profilePools);
     return {
       content: [
         {
           type: "text",
           text: [
-            `${amount_in} ${isUsdg(inAddr) ? "USDG" : p.symbol} -> ~${formatUnits(amountOut, outDecimals)} ${isUsdg(outAddr) ? "USDG" : p.symbol}`,
-            `pool: fee ${pool.fee / 10000}% | liquidity ${pool.liquidity}`,
+            `${amount_in} ${pair.inSymbol} -> ~${formatUnits(amountOut, pair.outDecimals)} ${pair.outSymbol} (~$${tradeUsd.toFixed(2)})`,
+            `pool: vs ${pool.quoteSymbol} | fee ${pool.fee / 10000}% | liquidity ${pool.liquidity}`,
           ].join("\n"),
         },
       ],
@@ -109,11 +185,11 @@ server.registerTool(
   "swap",
   {
     description:
-      "Swap between USDG and another token on Uniswap V4 (exact input). Guardrails run before signing: the token's trust tier must be enabled, the trade's USD value must fit the per-trade limit for that tier, and the rolling 24h USD budget must not be exceeded. Blocked trades cost nothing.",
+      "Swap on Uniswap V4 (exact input, best pool). One side must be ETH or USDG; memecoins and utility tokens usually trade against ETH, stock tokens against USDG. Guardrails run before signing: the token's trust tier must be enabled, the trade's USD value must fit the per-trade limit for that tier, and the rolling 24h USD budget must not be exceeded. Blocked trades cost nothing.",
     inputSchema: {
-      token_in: z.string().describe("Address of the token to sell, or 'USDG'"),
-      token_out: z.string().describe("Address of the token to buy, or 'USDG'"),
-      amount_in: z.string().describe("Human-readable amount to sell, e.g. '100'"),
+      token_in: z.string().describe("'ETH', 'USDG', or a token address to sell"),
+      token_out: z.string().describe("'ETH', 'USDG', or a token address to buy"),
+      amount_in: z.string().describe("Human-readable amount to sell, e.g. '0.05'"),
       slippage_bps: z
         .number()
         .optional()
@@ -121,49 +197,44 @@ server.registerTool(
     },
   },
   async ({ token_in, token_out, amount_in, slippage_bps }) => {
-    const inAddr = token_in.toUpperCase() === "USDG" ? USDG : getAddress(token_in);
-    const outAddr = token_out.toUpperCase() === "USDG" ? USDG : getAddress(token_out);
-    if (isUsdg(inAddr) === isUsdg(outAddr)) {
-      throw new Error("One side of the pair must be USDG (v0.2 routes all trades through USDG).");
+    const pair = await resolvePair(token_in, token_out);
+    const amountIn = parseUnits(amount_in, pair.inDecimals);
+
+    // Balance check, with a gas cushion when spending native ETH.
+    const inBalance = await balanceOf(pair.tokenIn);
+    const gasCushion = isNative(pair.tokenIn) ? parseUnits("0.0005", 18) : 0n;
+    if (inBalance < amountIn + gasCushion) {
+      throw new Error(
+        `Insufficient ${pair.inSymbol}: have ${formatUnits(inBalance, pair.inDecimals)}, ` +
+          `need ${amount_in}${gasCushion > 0n ? " plus a small gas reserve" : ""}.`
+      );
     }
-    const other = isUsdg(inAddr) ? outAddr : inAddr;
-    const p = await profileToken(other);
-    const inDecimals = isUsdg(inAddr) ? USDG_DECIMALS : p.decimals;
-    const outDecimals = isUsdg(outAddr) ? USDG_DECIMALS : p.decimals;
-    const amountIn = parseUnits(amount_in, inDecimals);
 
     // Value the trade in USD, then run the guardrails — before any signing.
-    const tradeUsd = await usdValue(inAddr, amountIn, inDecimals, p.pools);
-    checkTradeAllowed(p.tier, tradeUsd, p.tierReasons);
+    const tradeUsd = await usdValue(pair.tokenIn, amountIn, pair.inDecimals, pair.profilePools);
+    checkTradeAllowed(pair.tier, tradeUsd, pair.tierReasons);
 
-    const { pool, amountOut: quoted } = await bestQuote(p.pools, inAddr, amountIn);
+    const { pool, amountOut: quoted } = await bestQuote(pair.pools, pair.tokenIn, amountIn);
     const minOut = (quoted * BigInt(10_000 - (slippage_bps ?? 100))) / 10_000n;
 
-    const outBefore = await publicClient.readContract({
-      address: outAddr,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [account.address],
-    });
-    const txHash = await swapV4(pool, inAddr, outAddr, amountIn, minOut);
-    const outAfter = await publicClient.readContract({
-      address: outAddr,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [account.address],
-    });
-    const received = formatUnits(outAfter - outBefore, outDecimals);
+    const outBefore = await balanceOf(pair.tokenOut);
+    const { txHash, gasCostWei } = await swapV4(pool, pair.tokenIn, pair.tokenOut, amountIn, minOut);
+    const outAfter = await balanceOf(pair.tokenOut);
+    // Native-ETH output is measured net of the gas this tx burned.
+    const rawDelta = outAfter - outBefore;
+    const received = formatUnits(
+      isNative(pair.tokenOut) ? rawDelta + gasCostWei : rawDelta,
+      pair.outDecimals
+    );
 
-    const inSymbol = isUsdg(inAddr) ? "USDG" : p.symbol;
-    const outSymbol = isUsdg(outAddr) ? "USDG" : p.symbol;
     recordTrade({
       timestamp: Date.now(),
-      tokenIn: inSymbol,
-      tokenOut: outSymbol,
+      tokenIn: pair.inSymbol,
+      tokenOut: pair.outSymbol,
       amountIn: amount_in,
       amountOut: received,
       usdValue: tradeUsd,
-      tier: p.tier,
+      tier: pair.tier,
       txHash,
     });
 
@@ -172,9 +243,9 @@ server.registerTool(
         {
           type: "text",
           text: [
-            `Swap executed (~$${tradeUsd.toFixed(2)}, ${p.tier} tier).`,
-            `sold: ${amount_in} ${inSymbol}`,
-            `received: ${received} ${outSymbol}`,
+            `Swap executed (~$${tradeUsd.toFixed(2)}, ${pair.tier} tier).`,
+            `sold: ${amount_in} ${pair.inSymbol}`,
+            `received: ${received} ${pair.outSymbol}`,
             `tx: ${BLOCKSCOUT}/tx/${txHash}`,
           ].join("\n"),
         },
@@ -187,13 +258,18 @@ server.registerTool(
   "get_portfolio",
   {
     description:
-      "Current holdings of the pocket wallet: ETH (gas), USDG, and every token previously traded.",
+      "Current holdings of the pocket wallet: ETH, USDG, and every token previously traded. Includes the live ETH/USD price.",
     inputSchema: {},
   },
   async () => {
     const lines = [`wallet: ${account.address}`];
     const eth = await publicClient.getBalance({ address: account.address });
-    lines.push(`ETH (gas): ${formatUnits(eth, 18)}`);
+    try {
+      const price = await ethUsdPrice();
+      lines.push(`ETH: ${formatUnits(eth, 18)} (~$${(Number(formatUnits(eth, 18)) * price).toFixed(2)} @ $${price.toFixed(0)}/ETH)`);
+    } catch {
+      lines.push(`ETH: ${formatUnits(eth, 18)}`);
+    }
     const usdg = await publicClient.readContract({
       address: USDG,
       abi: erc20Abi,
@@ -202,12 +278,10 @@ server.registerTool(
     });
     lines.push(`USDG: ${formatUnits(usdg, USDG_DECIMALS)}`);
 
-    // Positions discovered from trade history (symbol -> last known address isn't
-    // stored, so track distinct non-USDG symbols via history records' tx pages).
     const seen = new Set<string>();
     for (const t of tradeHistory(200)) {
       for (const s of [t.tokenIn, t.tokenOut]) {
-        if (s !== "USDG" && !seen.has(s)) seen.add(s);
+        if (s !== "USDG" && s !== "ETH" && !seen.has(s)) seen.add(s);
       }
     }
     if (seen.size > 0) {
@@ -234,7 +308,7 @@ server.registerTool(
       `  unknown (everything else): ${config.policy.tiers.unknown.enabled ? `enabled, max $${config.policy.tiers.unknown.maxPerTradeUsd}/trade` : "disabled"}`,
       `denylist: ${config.policy.denylist.length} address(es)`,
       ``,
-      `There is no withdrawal tool: funds can only rotate between tokens inside this wallet.`,
+      `There is no withdrawal tool: funds can only rotate between currencies inside this wallet.`,
     ];
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }
