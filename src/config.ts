@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import type { Hex } from "viem";
+import { join, resolve } from "node:path";
+import { HOODPOCKET_HOME } from "./keystore.js";
 
 export interface TierPolicy {
   enabled: boolean;
@@ -21,8 +21,6 @@ export interface Policy {
   };
   /** Established-tier threshold: minimum holder count. */
   minHolders: number;
-  /** Minimum USDG-side pool liquidity (in USDG) for a pool to count as real. */
-  minPoolUsdg: number;
   /** Token addresses the agent may never trade, regardless of tier. */
   denylist: string[];
 }
@@ -30,7 +28,7 @@ export interface Policy {
 export interface PocketConfig {
   rpcUrl?: string;
   policy: Policy;
-  /** Where trade history / spend tracking is stored. Default: .hoodpocket/state.json */
+  /** Where trade history / spend tracking is stored. Default: ~/.hoodpocket/state.json */
   stateFile?: string;
 }
 
@@ -42,13 +40,22 @@ const DEFAULT_POLICY: Policy = {
     unknown: { enabled: false, maxPerTradeUsd: 0 },
   },
   minHolders: 1000,
-  minPoolUsdg: 10_000,
   denylist: [],
 };
 
+/** Config search order: explicit env path, then cwd, then ~/.hoodpocket/config.json. */
+function findConfigPath(): string | null {
+  if (process.env.HOODPOCKET_CONFIG) return resolve(process.env.HOODPOCKET_CONFIG);
+  const cwdPath = resolve("hoodpocket.config.json");
+  if (existsSync(cwdPath)) return cwdPath;
+  const homePath = join(HOODPOCKET_HOME, "config.json");
+  if (existsSync(homePath)) return homePath;
+  return null;
+}
+
 function loadConfig(): PocketConfig {
-  const path = resolve(process.env.HOODPOCKET_CONFIG ?? "hoodpocket.config.json");
-  if (!existsSync(path)) return { policy: DEFAULT_POLICY };
+  const path = findConfigPath();
+  if (!path) return { policy: DEFAULT_POLICY };
   const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<PocketConfig>;
   return {
     ...raw,
@@ -61,11 +68,4 @@ function loadConfig(): PocketConfig {
   };
 }
 
-const pk = process.env.HOODPOCKET_PRIVATE_KEY;
-if (!pk) {
-  throw new Error(
-    "HOODPOCKET_PRIVATE_KEY is not set. Generate a fresh key for the pocket wallet. Never reuse your main wallet's key."
-  );
-}
-
-export const config = { ...loadConfig(), privateKey: pk as Hex };
+export const config = loadConfig();

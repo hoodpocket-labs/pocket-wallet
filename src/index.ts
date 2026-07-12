@@ -3,13 +3,39 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { formatUnits, getAddress, parseUnits, type Address } from "viem";
-import { BLOCKSCOUT, NATIVE, USDG, USDG_DECIMALS, account, erc20Abi, publicClient } from "./chain.js";
+import { BLOCKSCOUT, NATIVE, USDG, USDG_DECIMALS, account, erc20Abi, publicClient, wallet } from "./chain.js";
 import { config } from "./config.js";
 import { findPairPools, profileToken, searchTokens, type PoolInfo, type Tier } from "./discovery.js";
 import { checkTradeAllowed, recordTrade, spentUsdLast24h, tradeHistory } from "./guardrails.js";
 import { bestQuote, ethUsdPrice, isNative, swapV4, usdValue } from "./v4.js";
 
-const server = new McpServer({ name: "hoodpocket", version: "0.3.0" });
+// ── Human-run CLI subcommands (not part of the MCP surface) ──────────────────
+const command = process.argv[2];
+if (command === "address") {
+  console.log(wallet.address);
+  process.exit(0);
+}
+if (command === "export-key") {
+  console.error("WARNING: anyone with this key controls the pocket's funds.");
+  console.error("Store it somewhere safe and never paste it into a chat with an AI agent.\n");
+  console.log(wallet.privateKey);
+  process.exit(0);
+}
+if (command !== undefined) {
+  console.error(`Unknown command "${command}". Usage: hoodpocket [address|export-key]`);
+  process.exit(1);
+}
+
+// stderr is safe for MCP stdio servers; stdout is reserved for the protocol.
+if (wallet.source === "generated") {
+  console.error(`hoodpocket: generated a new pocket wallet: ${wallet.address}`);
+  console.error(`hoodpocket: key stored at ${wallet.path} (owner-only permissions)`);
+  console.error(`hoodpocket: fund it with ETH (gas + trading) to start. Back up the key with: npx hoodpocket export-key`);
+} else {
+  console.error(`hoodpocket: wallet ${wallet.address} (key from ${wallet.source})`);
+}
+
+const server = new McpServer({ name: "hoodpocket", version: "0.4.0" });
 
 function resolveCurrency(input: string): Address {
   const upper = input.trim().toUpperCase();
@@ -269,6 +295,11 @@ server.registerTool(
       lines.push(`ETH: ${formatUnits(eth, 18)} (~$${(Number(formatUnits(eth, 18)) * price).toFixed(2)} @ $${price.toFixed(0)}/ETH)`);
     } catch {
       lines.push(`ETH: ${formatUnits(eth, 18)}`);
+    }
+    if (eth === 0n) {
+      lines.push(
+        `This wallet is unfunded. Ask the user to send ETH (for gas and trading) to ${account.address} on Robinhood Chain (id 4663).`
+      );
     }
     const usdg = await publicClient.readContract({
       address: USDG,

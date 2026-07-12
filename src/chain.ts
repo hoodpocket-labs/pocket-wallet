@@ -2,6 +2,7 @@ import { createPublicClient, createWalletClient, defineChain, getAddress, http, 
 import { privateKeyToAccount } from "viem/accounts";
 import type { Address, Hex } from "viem";
 import { config } from "./config.js";
+import { loadOrCreateWallet } from "./keystore.js";
 
 /**
  * Robinhood Chain mainnet constants.
@@ -54,7 +55,8 @@ export const chain = defineChain({
   blockExplorers: { default: { name: "Blockscout", url: BLOCKSCOUT } },
 });
 
-export const account = privateKeyToAccount(config.privateKey);
+export const wallet = loadOrCreateWallet();
+export const account = privateKeyToAccount(wallet.privateKey);
 export const publicClient = createPublicClient({ chain, transport: http() });
 export const walletClient = createWalletClient({ account, chain, transport: http() });
 

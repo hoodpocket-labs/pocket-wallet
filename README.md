@@ -73,28 +73,22 @@ All liquidity lives on **Uniswap V4** (the PoolManager is the largest holder of 
 
 ## Setup
 
-The quick way (npm package):
+Two commands, no keys to manage:
 
 ```bash
-# 1. Create the pocket wallet: a FRESH key (cast wallet new, or any wallet app).
-#    Never reuse a key that guards real savings.
+# 1. Connect your agent. On first run hoodpocket generates a fresh pocket
+#    wallet automatically (stored at ~/.hoodpocket/wallet.json, chmod 600).
+claude mcp add hoodpocket -- npx -y hoodpocket
 
-# 2. Fund it: ETH (gas + trading) and optionally USDG, sent to the wallet address.
-
-# 3. Connect your agent
-claude mcp add hoodpocket --env HOODPOCKET_PRIVATE_KEY=0xYourPocketKey -- npx -y hoodpocket
+# 2. See the wallet address and fund it with ETH (gas + trading):
+npx -y hoodpocket address
 ```
 
-Sensible default guardrails apply out of the box ($1000/day budget, $500 official, $100 established, unknown blocked). To tune them, drop a `hoodpocket.config.json` ([example](hoodpocket.config.example.json)) in the directory the server runs from, or point `HOODPOCKET_CONFIG` at one.
+Or just ask your agent for the portfolio: it will tell you the address and that it needs funding. Back up the key anytime with `npx -y hoodpocket export-key` (human-run only; the key is never exposed through MCP tools, so a prompt-injected agent cannot exfiltrate it).
 
-From source instead:
+Sensible default guardrails apply out of the box ($1000/day budget, $500 official, $100 established, unknown blocked). To tune them, put a config ([example](hoodpocket.config.example.json)) at `~/.hoodpocket/config.json`, or point `HOODPOCKET_CONFIG` at one.
 
-```bash
-git clone https://github.com/hoodpocket/pocket-wallet && cd pocket-wallet
-npm install && npm run build
-cp .env.example .env                                       # put the pocket key here
-claude mcp add hoodpocket -- node /path/to/pocket-wallet/dist/index.js
-```
+Bring your own key instead by setting `HOODPOCKET_PRIVATE_KEY` (it takes precedence over the keystore). From source: `git clone`, `npm install && npm run build`, then `claude mcp add hoodpocket -- node /path/to/pocket-wallet/dist/index.js`.
 
 Then try: *"Search for CASHCAT, verify which one is real, and buy $10 worth with ETH if the price looks fair."*
 

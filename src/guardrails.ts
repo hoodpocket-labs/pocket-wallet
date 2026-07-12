@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { config } from "./config.js";
+import { HOODPOCKET_HOME } from "./keystore.js";
 import type { Tier } from "./discovery.js";
 
 export interface TradeRecord {
@@ -18,7 +19,9 @@ interface State {
   trades: TradeRecord[];
 }
 
-const statePath = resolve(config.stateFile ?? ".hoodpocket/state.json");
+const statePath = config.stateFile
+  ? resolve(config.stateFile)
+  : join(HOODPOCKET_HOME, "state.json");
 
 function loadState(): State {
   if (!existsSync(statePath)) return { trades: [] };
