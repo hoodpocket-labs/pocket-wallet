@@ -4,3 +4,4 @@ dist/
 .hoodpocket/
 *.log
 .DS_Store
+.claude/
