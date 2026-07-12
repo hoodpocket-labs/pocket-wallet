@@ -73,20 +73,27 @@ All liquidity lives on **Uniswap V4** (the PoolManager is the largest holder of 
 
 ## Setup
 
-```bash
-npm install && npm run build
+The quick way (npm package):
 
+```bash
 # 1. Create the pocket wallet: a FRESH key (cast wallet new, or any wallet app).
 #    Never reuse a key that guards real savings.
-cp .env.example .env                                       # put the key here
 
-# 2. Tune the policy (optional, sensible defaults apply)
-cp hoodpocket.config.example.json hoodpocket.config.json
+# 2. Fund it: ETH (gas + trading) and optionally USDG, sent to the wallet address.
 
-# 3. Fund the pocket: ETH (gas + trading) and optionally USDG, sent to the wallet address.
+# 3. Connect your agent
+claude mcp add hoodpocket --env HOODPOCKET_PRIVATE_KEY=0xYourPocketKey -- npx -y hoodpocket
+```
 
-# 4. Connect your agent
-claude mcp add hoodpocket -- node /path/to/hoodpocket/dist/index.js
+Sensible default guardrails apply out of the box ($1000/day budget, $500 official, $100 established, unknown blocked). To tune them, drop a `hoodpocket.config.json` ([example](hoodpocket.config.example.json)) in the directory the server runs from, or point `HOODPOCKET_CONFIG` at one.
+
+From source instead:
+
+```bash
+git clone https://github.com/hoodpocket/pocket-wallet && cd pocket-wallet
+npm install && npm run build
+cp .env.example .env                                       # put the pocket key here
+claude mcp add hoodpocket -- node /path/to/pocket-wallet/dist/index.js
 ```
 
 Then try: *"Search for CASHCAT, verify which one is real, and buy $10 worth with ETH if the price looks fair."*

@@ -10,14 +10,18 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "mcp",
+    "mcp-server",
     "robinhood-chain",
     "agentic-trading",
     "ai-agents",
-    "wallet"
+    "wallet",
+    "uniswap-v4",
+    "trading"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
@@ -28,5 +32,21 @@
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hoodpocket/pocket-wallet.git"
+  },
+  "homepage": "https://github.com/hoodpocket/pocket-wallet#readme",
+  "bugs": {
+    "url": "https://github.com/hoodpocket/pocket-wallet/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "hoodpocket.config.example.json",
+    ".env.example"
+  ]
 }
