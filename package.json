@@ -1,6 +1,6 @@
 {
   "name": "hoodpocket",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "A pocket trading wallet for AI agents on Robinhood Chain: an MCP server with built-in guardrails",
   "type": "module",
   "license": "MIT",
@@ -37,11 +37,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hoodpocket/pocket-wallet.git"
+    "url": "git+https://github.com/hoodpocket-labs/pocket-wallet.git"
   },
-  "homepage": "https://github.com/hoodpocket/pocket-wallet#readme",
+  "homepage": "https://github.com/hoodpocket-labs/pocket-wallet#readme",
   "bugs": {
-    "url": "https://github.com/hoodpocket/pocket-wallet/issues"
+    "url": "https://github.com/hoodpocket-labs/pocket-wallet/issues"
   },
   "engines": {
     "node": ">=20"
