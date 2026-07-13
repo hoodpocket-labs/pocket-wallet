@@ -1,5 +1,9 @@
 # hoodpocket
 
+[![npm version](https://img.shields.io/npm/v/hoodpocket?color=%23fafafa&labelColor=%23060607)](https://www.npmjs.com/package/hoodpocket)
+[![npm downloads](https://img.shields.io/npm/dm/hoodpocket?color=%2334d399&labelColor=%23060607)](https://www.npmjs.com/package/hoodpocket)
+[![license](https://img.shields.io/npm/l/hoodpocket?color=%23a1a1aa&labelColor=%23060607)](LICENSE)
+
 **A pocket trading wallet for AI agents on Robinhood Chain.**
 
 Give your AI agent a small, separate wallet it can trade from 24/7, with guardrails you set. hoodpocket is an [MCP](https://modelcontextprotocol.io) server, so any MCP-capable agent (Claude, ChatGPT, Cursor, and others) can trade memecoins, utility tokens, and tokenized stocks on [Robinhood Chain](https://robinhoodchain.blockscout.com) through it. Self-custodial: the key is yours, the funds are yours.
