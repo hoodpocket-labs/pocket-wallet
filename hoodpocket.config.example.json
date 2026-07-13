@@ -9,6 +9,12 @@
     },
     "minHolders": 1000,
     "minPoolUsdg": 10000,
-    "denylist": []
+    "denylist": [],
+    "commerce": {
+      "enabled": true,
+      "maxPerRequestUsd": 0.25,
+      "dailyBudgetUsd": 5,
+      "allowedHosts": ["api.naven.network"]
+    }
   }
 }

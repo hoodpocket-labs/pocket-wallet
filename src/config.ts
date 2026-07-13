@@ -8,6 +8,16 @@ export interface TierPolicy {
   maxPerTradeUsd: number;
 }
 
+export interface CommercePolicy {
+  enabled: boolean;
+  /** Max USD price of a single x402 paid request. */
+  maxPerRequestUsd: number;
+  /** Total USD the agent may spend on x402 requests across any rolling 24h. */
+  dailyBudgetUsd: number;
+  /** Hosts the agent may pay. Probing (discovery) is never restricted. */
+  allowedHosts: string[];
+}
+
 export interface Policy {
   /** Total USD turnover the agent may generate across any rolling 24h. */
   dailyBudgetUsd: number;
@@ -23,6 +33,8 @@ export interface Policy {
   minHolders: number;
   /** Token addresses the agent may never trade, regardless of tier. */
   denylist: string[];
+  /** x402 paid-request (agentic commerce) limits. */
+  commerce: CommercePolicy;
 }
 
 export interface PocketConfig {
@@ -41,6 +53,12 @@ const DEFAULT_POLICY: Policy = {
   },
   minHolders: 1000,
   denylist: [],
+  commerce: {
+    enabled: true,
+    maxPerRequestUsd: 0.25,
+    dailyBudgetUsd: 5,
+    allowedHosts: ["api.naven.network"],
+  },
 };
 
 /** Config search order: explicit env path, then cwd, then ~/.hoodpocket/config.json. */
@@ -64,6 +82,7 @@ function loadConfig(): PocketConfig {
       ...raw.policy,
       tiers: { ...DEFAULT_POLICY.tiers, ...raw.policy?.tiers },
       denylist: (raw.policy?.denylist ?? []).map((a) => a.toLowerCase()),
+      commerce: { ...DEFAULT_POLICY.commerce, ...raw.policy?.commerce },
     },
   };
 }

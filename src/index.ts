@@ -6,8 +6,18 @@ import { formatUnits, getAddress, parseUnits, type Address } from "viem";
 import { BLOCKSCOUT, NATIVE, USDG, USDG_DECIMALS, account, erc20Abi, publicClient, wallet } from "./chain.js";
 import { config } from "./config.js";
 import { findPairPools, profileToken, searchTokens, type PoolInfo, type Tier } from "./discovery.js";
-import { checkTradeAllowed, recordTrade, spentUsdLast24h, tradeHistory } from "./guardrails.js";
+import {
+  checkPaymentAllowed,
+  checkTradeAllowed,
+  commerceSpentUsdLast24h,
+  paymentHistory,
+  recordPayment,
+  recordTrade,
+  spentUsdLast24h,
+  tradeHistory,
+} from "./guardrails.js";
 import { bestQuote, ethUsdPrice, isNative, swapV4, usdValue } from "./v4.js";
+import { CATALOG, payAndFetch, probeX402, type RequestSpec } from "./x402.js";
 
 // ── Human-run CLI subcommands (not part of the MCP surface) ──────────────────
 const command = process.argv[2];
@@ -35,7 +45,7 @@ if (wallet.source === "generated") {
   console.error(`hoodpocket: wallet ${wallet.address} (key from ${wallet.source})`);
 }
 
-const server = new McpServer({ name: "hoodpocket", version: "0.4.0" });
+const server = new McpServer({ name: "hoodpocket", version: "0.5.0" });
 
 function resolveCurrency(input: string): Address {
   const upper = input.trim().toUpperCase();
@@ -280,6 +290,129 @@ server.registerTool(
   }
 );
 
+const requestSpecSchema = {
+  url: z.string().describe("The endpoint URL (query params can also go here directly)"),
+  method: z.enum(["GET", "POST"]).optional().describe("HTTP method (default GET, or POST when body is set)"),
+  query: z.record(z.string()).optional().describe("Query parameters to append to the URL"),
+  body: z.record(z.unknown()).optional().describe("JSON body for POST endpoints"),
+};
+
+function toSpec(args: { url: string; method?: "GET" | "POST"; query?: Record<string, string>; body?: Record<string, unknown> }): RequestSpec {
+  return { url: args.url, method: args.method, query: args.query, body: args.body };
+}
+
+server.registerTool(
+  "x402_discover",
+  {
+    description:
+      "Discover x402 pay-per-request APIs (agentic commerce). Without a URL: lists the known catalog, currently the Naven Marketplace on Robinhood Chain (crypto prices, DEX data, wallet intelligence, FX rates, flights, places, IP lookup; $0.001-$0.05 per call, settled in USDG). With a URL: probes it for free and returns the live payment terms (price, recipient, network) without paying. Always probe or check the catalog before x402_execute so the price is known.",
+    inputSchema: {
+      url: z.string().optional().describe("Endpoint to probe. Omit to list the catalog."),
+      method: z.enum(["GET", "POST"]).optional(),
+      query: z.record(z.string()).optional(),
+      body: z.record(z.unknown()).optional(),
+    },
+  },
+  async ({ url, method, query, body }) => {
+    if (!url) {
+      const lines = CATALOG.map(
+        (e) =>
+          `[${e.service}] ${e.name} | ${e.method} ${e.url} | $${e.priceUsd}/call\n` +
+          `  ${e.description} params: ${e.params}`
+      );
+      lines.push(
+        "",
+        "Prices are catalog estimates; probe an endpoint (pass its URL) for live terms.",
+        "Payments settle in USDG on Robinhood Chain from this wallet, gas paid by the facilitator."
+      );
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    }
+    const probe = await probeX402(toSpec({ url, method, query, body }));
+    if (probe.kind === "free") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `No payment required (HTTP ${probe.status}). Response:\n${JSON.stringify(probe.body, null, 2).slice(0, 4000)}`,
+          },
+        ],
+      };
+    }
+    const t = probe.terms;
+    return {
+      content: [
+        {
+          type: "text",
+          text: [
+            `Payment required: $${t.priceUsd} in USDG on ${t.network}`,
+            `pay to: ${t.payTo}`,
+            t.description ? `description: ${t.description}` : null,
+            `Run x402_execute with the same request and max_usd >= ${t.priceUsd} to pay and get the data.`,
+          ]
+            .filter((l): l is string => l !== null)
+            .join("\n"),
+        },
+      ],
+    };
+  }
+);
+
+server.registerTool(
+  "x402_execute",
+  {
+    description:
+      "Execute a paid x402 request: probes the endpoint, verifies the price against max_usd and the commerce guardrails (per-request cap, rolling 24h commerce budget, host allowlist), then signs a USDG payment from this wallet and returns the response. Payments are gasless for this wallet (the facilitator settles on-chain) but spend real USDG. Blocked or failed requests cost nothing.",
+    inputSchema: {
+      ...requestSpecSchema,
+      max_usd: z
+        .number()
+        .describe("Refuse to pay more than this many USD. Set from the x402_discover price."),
+    },
+  },
+  async ({ url, method, query, body, max_usd }) => {
+    const spec = toSpec({ url, method, query, body });
+    const probe = await probeX402(spec);
+    if (probe.kind === "free") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `No payment was required (HTTP ${probe.status}). Response:\n${JSON.stringify(probe.body, null, 2).slice(0, 8000)}`,
+          },
+        ],
+      };
+    }
+    const terms = probe.terms;
+    if (terms.priceUsd > max_usd) {
+      throw new Error(
+        `Endpoint charges $${terms.priceUsd}, above your max_usd of $${max_usd}. Nothing was paid.`
+      );
+    }
+    checkPaymentAllowed(spec.url, terms.priceUsd);
+
+    const result = await payAndFetch(spec, terms);
+    recordPayment({
+      timestamp: Date.now(),
+      url: spec.url,
+      usdValue: result.paidUsd,
+      payTo: result.payTo,
+      txHash: result.transaction,
+    });
+    return {
+      content: [
+        {
+          type: "text",
+          text: [
+            `Paid $${result.paidUsd} USDG (HTTP ${result.status}).` +
+              (result.transaction ? ` settlement: ${BLOCKSCOUT}/tx/${result.transaction}` : ""),
+            JSON.stringify(result.body, null, 2).slice(0, 8000),
+          ].join("\n"),
+        },
+      ],
+    };
+  }
+);
+
 server.registerTool(
   "get_portfolio",
   {
@@ -339,7 +472,13 @@ server.registerTool(
       `  unknown (everything else): ${config.policy.tiers.unknown.enabled ? `enabled, max $${config.policy.tiers.unknown.maxPerTradeUsd}/trade` : "disabled"}`,
       `denylist: ${config.policy.denylist.length} address(es)`,
       ``,
-      `There is no withdrawal tool: funds can only rotate between currencies inside this wallet.`,
+      `x402 commerce (paid API requests): ${
+        config.policy.commerce.enabled
+          ? `enabled, max $${config.policy.commerce.maxPerRequestUsd}/request, budget $${config.policy.commerce.dailyBudgetUsd}/24h (used ~$${commerceSpentUsdLast24h().toFixed(4)}), hosts: ${config.policy.commerce.allowedHosts.join(", ")}`
+          : "disabled"
+      }`,
+      ``,
+      `There is no withdrawal tool: funds can only rotate between currencies inside this wallet, minus x402 payments to allowed hosts.`,
     ];
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }
@@ -355,11 +494,24 @@ server.registerTool(
   },
   async ({ limit }) => {
     const trades = tradeHistory(limit ?? 20);
-    if (trades.length === 0) return { content: [{ type: "text", text: "No trades yet." }] };
+    const payments = paymentHistory(limit ?? 20);
+    if (trades.length === 0 && payments.length === 0) {
+      return { content: [{ type: "text", text: "No trades or payments yet." }] };
+    }
     const lines = trades.map(
       (t) =>
         `${new Date(t.timestamp).toISOString()}  ${t.amountIn} ${t.tokenIn} -> ${t.amountOut} ${t.tokenOut}  (~$${t.usdValue.toFixed(2)}, ${t.tier})  ${BLOCKSCOUT}/tx/${t.txHash}`
     );
+    if (payments.length > 0) {
+      lines.push(``, `x402 payments:`);
+      lines.push(
+        ...payments.map(
+          (p) =>
+            `${new Date(p.timestamp).toISOString()}  $${p.usdValue} USDG -> ${p.url}` +
+            (p.txHash ? `  ${BLOCKSCOUT}/tx/${p.txHash}` : "")
+        )
+      );
+    }
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }
 );

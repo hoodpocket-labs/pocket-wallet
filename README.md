@@ -38,7 +38,7 @@ USD guardrail valuation for ETH pairs goes through the deep native-ETH/USDG pool
 
 - **Separate pocket.** A fresh key funded only with what you're willing to let the agent trade. Worst case is the pocket, nothing more. (Same philosophy as Robinhood's own agentic accounts: isolation + limits.)
 - **Guardrails before signatures.** Tier policy, per-trade USD limit, and daily budget are checked before anything is signed. Blocked trades cost nothing and return a readable reason the agent can adapt to.
-- **No withdrawals.** There is deliberately no "send to address" tool: funds can rotate between currencies inside the wallet but can't leave it. Only you can move them out, with the key.
+- **No withdrawals.** There is deliberately no "send to address" tool: funds can rotate between currencies inside the wallet but can't leave it, with one narrow exception: x402 payments to allowlisted API hosts, capped by their own per-request and daily limits. Only you can move funds out, with the key.
 - **Names are never identity.** Trades reference contract addresses; the fake-USDC problem can't bite.
 - **Full history.** Every trade is recorded locally with explorer links (`get_trade_history`).
 
@@ -52,7 +52,30 @@ USD guardrail valuation for ETH pairs goes through the deep native-ETH/USDG pool
 | `swap` | Exact-input swap via Uniswap V4 Universal Router, guardrails enforced |
 | `get_portfolio` | ETH (with live USD value), USDG, and previously traded positions |
 | `get_limits` | Current policy + how much of the daily budget is used |
-| `get_trade_history` | Recent trades with tx links |
+| `get_trade_history` | Recent trades and x402 payments with tx links |
+| `x402_discover` | Browse the pay-per-request API catalog, or probe any endpoint's live price for free |
+| `x402_execute` | Pay for an API call in USDG via x402, guardrails enforced |
+
+## Agentic commerce: x402 paid APIs
+
+Beyond trading, the pocket can pay for data. hoodpocket speaks [x402](https://docs.naven.network/getting-started/how-x402-payments-work), the HTTP 402 payment standard: an endpoint quotes its price in a 402 challenge, hoodpocket signs a USDG payment (EIP-3009, gasless for the wallet; the facilitator settles on-chain), retries the request, and returns the data.
+
+Out of the box the catalog covers the [Naven Marketplace](https://naven.network/marketplace) on Robinhood Chain: CoinGecko and CoinMarketCap market data, Nansen wallet intelligence, FX rates, flight search, place search, and IP lookup, at $0.001 to $0.05 per call. Any other x402 endpoint works too once its host is allowed.
+
+Commerce has its own guardrails, separate from the trading budget:
+
+```json
+"commerce": {
+  "enabled": true,
+  "maxPerRequestUsd": 0.25,
+  "dailyBudgetUsd": 5,
+  "allowedHosts": ["api.naven.network"]
+}
+```
+
+Discovery (probing an endpoint's price) is free and unrestricted; paying requires the host to be allowlisted, the price to fit both the per-request cap and the rolling 24h commerce budget, and the agent's own `max_usd` bound. The challenge must settle in USDG on Robinhood Chain; anything else is refused. Every payment lands in `get_trade_history` with its settlement tx.
+
+Try: *"Check what the Naven marketplace offers, then pull the trending pools on Robinhood Chain (it costs a cent)."*
 
 ## Verified chain constants
 
@@ -99,6 +122,7 @@ Guardrails are enforced by this server's code before signing, not by the blockch
 ## Roadmap
 
 - [x] Native ETH pairs (memecoins, Virtuals utility tokens)
+- [x] x402 agentic commerce: pay-per-request APIs settled in USDG (Naven Marketplace)
 - [ ] Multi-hop routing for token-to-token trades
 - [ ] Batched pool-liquidity reads (multicall) for tokens with 100+ pools
 - [ ] Position tracking with cost basis and P&L
