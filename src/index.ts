@@ -7,10 +7,14 @@ import { BLOCKSCOUT, NATIVE, USDG, USDG_DECIMALS, account, erc20Abi, publicClien
 import { config } from "./config.js";
 import { findPairPools, profileToken, searchTokens, type PoolInfo, type Tier } from "./discovery.js";
 import {
+  acpJobHistory,
+  acpSpentUsdLast24h,
+  checkAcpJobAllowed,
   checkPaymentAllowed,
   checkTradeAllowed,
   commerceSpentUsdLast24h,
   paymentHistory,
+  recordAcpJob,
   recordPayment,
   recordTrade,
   spentUsdLast24h,
@@ -18,6 +22,7 @@ import {
 } from "./guardrails.js";
 import { bestQuote, ethUsdPrice, isNative, swapV4, usdValue } from "./v4.js";
 import { CATALOG, payAndFetch, probeX402, type RequestSpec } from "./x402.js";
+import { browseAcpAgents, hireAcpAgent } from "./acp.js";
 
 // ── Human-run CLI subcommands (not part of the MCP surface) ──────────────────
 const command = process.argv[2];
@@ -45,7 +50,7 @@ if (wallet.source === "generated") {
   console.error(`hoodpocket: wallet ${wallet.address} (key from ${wallet.source})`);
 }
 
-const server = new McpServer({ name: "hoodpocket", version: "0.5.0" });
+const server = new McpServer({ name: "hoodpocket", version: "0.6.0" });
 
 function resolveCurrency(input: string): Address {
   const upper = input.trim().toUpperCase();
@@ -414,6 +419,95 @@ server.registerTool(
 );
 
 server.registerTool(
+  "acp_browse",
+  {
+    description:
+      "Browse the Virtuals Agent Commerce Protocol (ACP) network on Robinhood Chain: discover other AI agents you can hire and the services (offerings) they sell, priced in USD. Free to browse. Use before acp_hire so the price and provider wallet are known. Requires the Virtuals SDK to be installed (npm i -g @virtuals-protocol/acp-node-v2).",
+    inputSchema: {
+      keyword: z.string().describe("What you need, e.g. 'market research', 'image generation', 'trading signals'"),
+      limit: z.number().optional().describe("Max agents to return (default 10)"),
+    },
+  },
+  async ({ keyword, limit }) => {
+    if (!config.policy.acp.enabled) {
+      throw new Error(
+        "Virtuals ACP is disabled by policy. Enable policy.acp.enabled in your config to browse and hire agents."
+      );
+    }
+    const agents = await browseAcpAgents(keyword, limit ?? 10);
+    if (agents.length === 0) {
+      return { content: [{ type: "text", text: `No ACP agents found for "${keyword}".` }] };
+    }
+    const lines = agents.flatMap((a) => [
+      `${a.name} ${a.rating !== null ? `(${a.rating}★)` : ""} — ${a.walletAddress}`,
+      `  ${a.description.slice(0, 160)}`,
+      ...a.offerings
+        .filter((o) => !o.isHidden)
+        .map((o) => `  · "${o.name}" $${o.priceValue} — ${o.description.slice(0, 100)}`),
+    ]);
+    lines.push(
+      "",
+      "To hire: acp_hire with the provider wallet address, the offering name, and the requirement.",
+    );
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  }
+);
+
+server.registerTool(
+  "acp_hire",
+  {
+    description:
+      "Hire a Virtuals ACP agent for one of its offerings: creates and funds the job in USDG on Robinhood Chain. Guardrails run first (ACP must be enabled, price within the per-job cap and rolling 24h ACP budget). Blocked or failed jobs cost nothing. Browse with acp_browse first to get the provider address and offering name.",
+    inputSchema: {
+      provider_address: z.string().describe("Wallet address of the agent to hire (from acp_browse)"),
+      offering: z.string().describe("The exact offering name to buy"),
+      requirement: z.string().describe("What you need delivered (the job brief / input)"),
+      max_usd: z.number().describe("Refuse to pay more than this. Set from the acp_browse price."),
+    },
+  },
+  async ({ provider_address, offering, requirement, max_usd }) => {
+    if (!config.policy.acp.enabled) {
+      throw new Error(
+        "Hiring blocked: Virtuals ACP is disabled by policy. Enable policy.acp.enabled in your config."
+      );
+    }
+    // Peek at the price from the live listing before funding anything.
+    const target = await browseAcpAgents(offering, 25).then((list) =>
+      list.find((a) => a.walletAddress.toLowerCase() === provider_address.toLowerCase())
+    );
+    const listed = target?.offerings.find((o) => o.name === offering);
+    const priceUsd = listed?.priceValue ?? max_usd;
+    if (priceUsd > max_usd) {
+      throw new Error(
+        `Offering "${offering}" costs $${priceUsd}, above your max_usd of $${max_usd}. Nothing was hired.`
+      );
+    }
+    checkAcpJobAllowed(priceUsd);
+
+    const result = await hireAcpAgent(provider_address, offering, requirement);
+    recordAcpJob({
+      timestamp: Date.now(),
+      provider: result.provider,
+      offering: result.offering,
+      jobId: result.jobId,
+      usdValue: result.priceUsd,
+    });
+    return {
+      content: [
+        {
+          type: "text",
+          text: [
+            `Hired ${result.provider} for "${result.offering}" (~$${result.priceUsd} USDG).`,
+            `ACP job id: ${result.jobId}`,
+            `The provider agent will deliver against your requirement. Track it in get_trade_history.`,
+          ].join("\n"),
+        },
+      ],
+    };
+  }
+);
+
+server.registerTool(
   "get_portfolio",
   {
     description:
@@ -477,8 +571,13 @@ server.registerTool(
           ? `enabled, max $${config.policy.commerce.maxPerRequestUsd}/request, budget $${config.policy.commerce.dailyBudgetUsd}/24h (used ~$${commerceSpentUsdLast24h().toFixed(4)}), hosts: ${config.policy.commerce.allowedHosts.join(", ")}`
           : "disabled"
       }`,
+      `Virtuals ACP (hiring agents): ${
+        config.policy.acp.enabled
+          ? `enabled, max $${config.policy.acp.maxPerJobUsd}/job, budget $${config.policy.acp.dailyBudgetUsd}/24h (used ~$${acpSpentUsdLast24h().toFixed(2)})`
+          : "disabled"
+      }`,
       ``,
-      `There is no withdrawal tool: funds can only rotate between currencies inside this wallet, minus x402 payments to allowed hosts.`,
+      `There is no withdrawal tool: funds can only rotate between currencies inside this wallet, minus x402 payments to allowed hosts and funded ACP jobs.`,
     ];
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }
@@ -495,8 +594,9 @@ server.registerTool(
   async ({ limit }) => {
     const trades = tradeHistory(limit ?? 20);
     const payments = paymentHistory(limit ?? 20);
-    if (trades.length === 0 && payments.length === 0) {
-      return { content: [{ type: "text", text: "No trades or payments yet." }] };
+    const acpJobs = acpJobHistory(limit ?? 20);
+    if (trades.length === 0 && payments.length === 0 && acpJobs.length === 0) {
+      return { content: [{ type: "text", text: "No trades, payments, or hires yet." }] };
     }
     const lines = trades.map(
       (t) =>
@@ -509,6 +609,15 @@ server.registerTool(
           (p) =>
             `${new Date(p.timestamp).toISOString()}  $${p.usdValue} USDG -> ${p.url}` +
             (p.txHash ? `  ${BLOCKSCOUT}/tx/${p.txHash}` : "")
+        )
+      );
+    }
+    if (acpJobs.length > 0) {
+      lines.push(``, `ACP hires:`);
+      lines.push(
+        ...acpJobs.map(
+          (j) =>
+            `${new Date(j.timestamp).toISOString()}  $${j.usdValue} USDG -> ${j.provider} "${j.offering}" (job ${j.jobId})`
         )
       );
     }

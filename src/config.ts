@@ -18,6 +18,15 @@ export interface CommercePolicy {
   allowedHosts: string[];
 }
 
+export interface AcpPolicy {
+  /** Off by default: hiring other agents moves funds, so it is opt-in. */
+  enabled: boolean;
+  /** Max USD to fund a single Virtuals ACP job. */
+  maxPerJobUsd: number;
+  /** Total USD the agent may spend hiring agents across any rolling 24h. */
+  dailyBudgetUsd: number;
+}
+
 export interface Policy {
   /** Total USD turnover the agent may generate across any rolling 24h. */
   dailyBudgetUsd: number;
@@ -35,6 +44,8 @@ export interface Policy {
   denylist: string[];
   /** x402 paid-request (agentic commerce) limits. */
   commerce: CommercePolicy;
+  /** Virtuals ACP agent-to-agent hiring limits. */
+  acp: AcpPolicy;
 }
 
 export interface PocketConfig {
@@ -58,6 +69,11 @@ const DEFAULT_POLICY: Policy = {
     maxPerRequestUsd: 0.25,
     dailyBudgetUsd: 5,
     allowedHosts: ["api.naven.network"],
+  },
+  acp: {
+    enabled: false,
+    maxPerJobUsd: 5,
+    dailyBudgetUsd: 25,
   },
 };
 
@@ -83,6 +99,7 @@ function loadConfig(): PocketConfig {
       tiers: { ...DEFAULT_POLICY.tiers, ...raw.policy?.tiers },
       denylist: (raw.policy?.denylist ?? []).map((a) => a.toLowerCase()),
       commerce: { ...DEFAULT_POLICY.commerce, ...raw.policy?.commerce },
+      acp: { ...DEFAULT_POLICY.acp, ...raw.policy?.acp },
     },
   };
 }

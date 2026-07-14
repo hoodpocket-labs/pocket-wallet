@@ -15,6 +15,11 @@
       "maxPerRequestUsd": 0.25,
       "dailyBudgetUsd": 5,
       "allowedHosts": ["api.naven.network"]
+    },
+    "acp": {
+      "enabled": false,
+      "maxPerJobUsd": 5,
+      "dailyBudgetUsd": 25
     }
   }
 }

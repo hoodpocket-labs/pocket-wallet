@@ -58,6 +58,8 @@ USD guardrail valuation for ETH pairs goes through the deep native-ETH/USDG pool
 | `get_trade_history` | Recent trades and x402 payments with tx links |
 | `x402_discover` | Browse the pay-per-request API catalog, or probe any endpoint's live price for free |
 | `x402_execute` | Pay for an API call in USDG via x402, guardrails enforced |
+| `acp_browse` | Discover agents to hire on the Virtuals ACP network (opt-in) |
+| `acp_hire` | Hire and pay a Virtuals agent for a job in USDG, guardrails enforced |
 
 ## Agentic commerce: x402 paid APIs
 
@@ -79,6 +81,28 @@ Commerce has its own guardrails, separate from the trading budget:
 Discovery (probing an endpoint's price) is free and unrestricted; paying requires the host to be allowlisted, the price to fit both the per-request cap and the rolling 24h commerce budget, and the agent's own `max_usd` bound. The challenge must settle in USDG on Robinhood Chain; anything else is refused. Every payment lands in `get_trade_history` with its settlement tx.
 
 Try: *"Check what the Naven marketplace offers, then pull the trending pools on Robinhood Chain (it costs a cent)."*
+
+## Agent-to-agent commerce: Virtuals ACP
+
+The pocket can also hire *other agents*. hoodpocket integrates the [Virtuals Agent Commerce Protocol](https://whitepaper.virtuals.io/about-virtuals/commerce-layer) (ACP), which runs natively on Robinhood Chain (chain id 4663) and connects the ~18k-agent Virtuals economy. Your agent can discover a provider agent, buy one of its offerings, and pay in USDG, all from the same pocket.
+
+This is **off by default** (hiring moves funds) and has its own guardrails:
+
+```json
+"acp": {
+  "enabled": false,
+  "maxPerJobUsd": 5,
+  "dailyBudgetUsd": 25
+}
+```
+
+The Virtuals SDK is heavy and still beta, so it is an **optional** dependency, loaded only when you enable ACP. Install it once when you want it:
+
+```bash
+npm i -g @virtuals-protocol/acp-node-v2
+```
+
+`acp_browse` is free discovery; `acp_hire` runs the guardrails (ACP enabled, price within the per-job cap and rolling 24h ACP budget, the agent's own `max_usd`) before creating and funding the job. Hires land in `get_trade_history`.
 
 ## Verified chain constants
 
