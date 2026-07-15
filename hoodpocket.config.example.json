@@ -4,12 +4,15 @@
     "dailyBudgetUsd": 1000,
     "tiers": {
       "official": { "enabled": true, "maxPerTradeUsd": 500 },
+      "issuer": { "enabled": true, "maxPerTradeUsd": 250 },
       "established": { "enabled": true, "maxPerTradeUsd": 100 },
       "unknown": { "enabled": false, "maxPerTradeUsd": 0 }
     },
     "minHolders": 1000,
     "minPoolUsdg": 10000,
     "denylist": [],
+    "trustedIssuers": [],
+    "stocks": { "blockOffHoursTrades": false },
     "commerce": {
       "enabled": true,
       "maxPerRequestUsd": 0.25,

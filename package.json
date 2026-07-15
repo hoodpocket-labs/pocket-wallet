@@ -1,6 +1,6 @@
 {
   "name": "hoodpocket",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "A pocket trading wallet for AI agents on Robinhood Chain: an MCP server with built-in guardrails",
   "type": "module",
   "license": "MIT",

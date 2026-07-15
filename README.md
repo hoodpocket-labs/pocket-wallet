@@ -23,6 +23,7 @@ Instead, the agent discovers tokens dynamically (`search_tokens`) and every addr
 | Tier | Signals | Default policy |
 |---|---|---|
 | **official** | runtime bytecode matches the official Robinhood stock-token fingerprint (identical across AAPL, NVDA, TSLA, GOOGL, and the rest) + deployer cross-check + live quote pool | $500/trade |
+| **issuer** | matches an RWA issuer you registered yourself (bytecode fingerprint and/or deployer address) + live quote pool | $250/trade |
 | **established** | 1000+ holders, indexed price feed, live Uniswap V4 liquidity against ETH or USDG | $100/trade |
 | **unknown** | everything else | blocked |
 
@@ -36,6 +37,35 @@ Trades route through the two currencies that actually hold the chain's liquidity
 - **USDG** (Global Dollar): where the official stock tokens trade.
 
 USD guardrail valuation for ETH pairs goes through the deep native-ETH/USDG pools (57 of them), so budgets stay dollar-denominated no matter which side the agent trades.
+
+## Stock tokens and RWAs
+
+Robinhood Chain launched as an RWA-first L2: the ~95 official stock tokens (AAPL, NVDA, TSLA, ...) trade 24/7 against USDG, and more issuers are expected to bring tokenized assets on-chain. hoodpocket treats both cases explicitly.
+
+**Market-hours awareness.** Stock tokens trade around the clock, but the equities they track only price 9:30 to 16:00 ET on NYSE trading days. Off-hours, pool prices float on on-chain flow alone and can drift from the last close. hoodpocket computes the NYSE calendar (weekends, the ten full holidays with observation rules, 13:00 early closes) and:
+
+- shows the live market status on `get_token_info`, `quote`, and `get_limits` for any official stock token,
+- appends a drift warning to quotes and executed trades while the market is closed,
+- optionally blocks off-hours stock trades entirely:
+
+```json
+"stocks": { "blockOffHoursTrades": true }
+```
+
+**Trusted RWA issuers.** Non-Robinhood RWA tokens will not match the official fingerprint, so by default they fall to `established` or `unknown`. If you trust a specific issuer, register it and its tokens classify into the `issuer` tier with its own per-trade limit:
+
+```json
+"tiers": { "issuer": { "enabled": true, "maxPerTradeUsd": 250 } },
+"trustedIssuers": [
+  {
+    "name": "Example RWA Issuer",
+    "deployer": "0x...",
+    "codehash": "0x..."
+  }
+]
+```
+
+`codehash` is the keccak256 of the token's runtime bytecode (shared across an issuer's tokens the same way Robinhood's is); `deployer` is cross-checked against the explorer's creator address. Every criterion you provide must pass, plus a live quote pool. Provide both for the strongest match; an entry with neither never matches.
 
 ## How it stays safe
 
@@ -84,7 +114,7 @@ Try: *"Check what the Naven marketplace offers, then pull the trending pools on 
 
 ## Agent-to-agent commerce: Virtuals ACP
 
-The pocket can also hire *other agents*. hoodpocket integrates the [Virtuals Agent Commerce Protocol](https://whitepaper.virtuals.io/about-virtuals/commerce-layer) (ACP), which runs natively on Robinhood Chain (chain id 4663) and connects the ~18k-agent Virtuals economy. Your agent can discover a provider agent, buy one of its offerings, and pay in USDG, all from the same pocket.
+The pocket can also hire *other agents*. hoodpocket integrates the [Virtuals Agent Commerce Protocol](https://whitepaper.virtuals.io/about-virtuals/commerce-layer) (ACP), whose contracts are deployed natively on Robinhood Chain (chain id 4663) with USDG as the payment token. Your agent can discover provider agents from the ~18k-agent Virtuals economy, and hire the ones registered on Robinhood Chain, paying in USDG from the same pocket. Most providers today are still registered on other chains; the population on 4663 is early.
 
 This is **off by default** (hiring moves funds) and has its own guardrails:
 
@@ -136,7 +166,7 @@ npx -y hoodpocket address
 
 Or just ask your agent for the portfolio: it will tell you the address and that it needs funding. Back up the key anytime with `npx -y hoodpocket export-key` (human-run only; the key is never exposed through MCP tools, so a prompt-injected agent cannot exfiltrate it).
 
-Sensible default guardrails apply out of the box ($1000/day budget, $500 official, $100 established, unknown blocked). To tune them, put a config ([example](hoodpocket.config.example.json)) at `~/.hoodpocket/config.json`, or point `HOODPOCKET_CONFIG` at one.
+Sensible default guardrails apply out of the box ($1000/day budget, $500 official, $250 issuer, $100 established, unknown blocked). To tune them, put a config ([example](hoodpocket.config.example.json)) at `~/.hoodpocket/config.json`, or point `HOODPOCKET_CONFIG` at one.
 
 Bring your own key instead by setting `HOODPOCKET_PRIVATE_KEY` (it takes precedence over the keystore). From source: `git clone`, `npm install && npm run build`, then `claude mcp add hoodpocket -- node /path/to/pocket-wallet/dist/index.js`.
 
@@ -150,6 +180,8 @@ Guardrails are enforced by this server's code before signing, not by the blockch
 
 - [x] Native ETH pairs (memecoins, Virtuals utility tokens)
 - [x] x402 agentic commerce: pay-per-request APIs settled in USDG (Naven Marketplace)
+- [x] RWA support: trusted-issuer registry + US market-hours guardrail for stock tokens
+- [ ] Dividend / corporate-action surfacing for stock tokens (pending issuer docs on distribution mechanics)
 - [ ] Multi-hop routing for token-to-token trades
 - [ ] Batched pool-liquidity reads (multicall) for tokens with 100+ pools
 - [ ] Position tracking with cost basis and P&L

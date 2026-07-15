@@ -13,7 +13,7 @@ import {
 } from "./chain.js";
 import { config } from "./config.js";
 
-export type Tier = "official" | "established" | "unknown";
+export type Tier = "official" | "issuer" | "established" | "unknown";
 
 export interface PoolInfo {
   poolId: Hex;
@@ -38,6 +38,8 @@ export interface TokenProfile {
   holders: number | null;
   priceUsd: number | null;
   pools: PoolInfo[];
+  /** True for verified official Robinhood stock tokens (tracks a NYSE-listed equity). */
+  isStock: boolean;
 }
 
 const stateViewAbi = parseAbi([
@@ -154,6 +156,38 @@ export async function findQuotePools(token: Address): Promise<PoolInfo[]> {
 
 // ─── Tier classification ──────────────────────────────────────────────────────
 
+/**
+ * Match a token against the owner's trusted RWA issuer registry
+ * (policy.trustedIssuers). Every criterion an entry provides must pass:
+ * codehash is compared to the token's runtime bytecode hash, deployer to the
+ * explorer's creator address. An entry with neither criterion never matches.
+ */
+async function matchTrustedIssuer(
+  address: Address,
+  codehash: Hex
+): Promise<{ name: string; matched: string[] } | null> {
+  let creator: string | null | undefined; // undefined = not fetched yet
+  for (const issuer of config.policy.trustedIssuers) {
+    if (!issuer.codehash && !issuer.deployer) continue;
+    const matched: string[] = [];
+    if (issuer.codehash) {
+      if (issuer.codehash !== codehash.toLowerCase()) continue;
+      matched.push("bytecode fingerprint");
+    }
+    if (issuer.deployer) {
+      if (creator === undefined) {
+        const meta = await blockscout<{ creator_address_hash?: string }>(`/addresses/${address}`);
+        creator = meta?.creator_address_hash?.toLowerCase() ?? null;
+      }
+      // Explorer down or creator mismatch: conservative, no match.
+      if (creator !== issuer.deployer) continue;
+      matched.push("deployer address");
+    }
+    return { name: issuer.name, matched };
+  }
+  return null;
+}
+
 const profileCache = new Map<string, { at: number; profile: TokenProfile }>();
 const PROFILE_TTL_MS = 10 * 60 * 1000;
 
@@ -194,6 +228,11 @@ export async function profileToken(rawAddress: string): Promise<TokenProfile> {
   const reasons: string[] = [];
   let tier: Tier = "unknown";
 
+  const issuerMatch =
+    hasLivePool && codehash !== OFFICIAL_STOCK_CODEHASH
+      ? await matchTrustedIssuer(address, codehash)
+      : null;
+
   if (codehash === OFFICIAL_STOCK_CODEHASH && hasLivePool) {
     tier = "official";
     reasons.push("bytecode matches official Robinhood stock-token fingerprint");
@@ -210,6 +249,12 @@ export async function profileToken(rawAddress: string): Promise<TokenProfile> {
         reasons.push("deployed by the official Robinhood issuer");
       }
     }
+  } else if (issuerMatch) {
+    tier = "issuer";
+    reasons.push(
+      `matches user-trusted issuer "${issuerMatch.name}" (${issuerMatch.matched.join(" + ")})`
+    );
+    reasons.push("live quote pool on Uniswap V4");
   } else if (
     hasLivePool &&
     holders !== null &&
@@ -243,6 +288,7 @@ export async function profileToken(rawAddress: string): Promise<TokenProfile> {
     holders,
     priceUsd,
     pools,
+    isStock: tier === "official" && codehash === OFFICIAL_STOCK_CODEHASH,
   };
   profileCache.set(key, { at: Date.now(), profile });
   return profile;

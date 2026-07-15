@@ -20,6 +20,7 @@ import {
   spentUsdLast24h,
   tradeHistory,
 } from "./guardrails.js";
+import { OFF_HOURS_WARNING, usMarketStatus } from "./markets.js";
 import { bestQuote, ethUsdPrice, isNative, swapV4, usdValue } from "./v4.js";
 import { CATALOG, payAndFetch, probeX402, type RequestSpec } from "./x402.js";
 import { browseAcpAgents, hireAcpAgent } from "./acp.js";
@@ -50,7 +51,7 @@ if (wallet.source === "generated") {
   console.error(`hoodpocket: wallet ${wallet.address} (key from ${wallet.source})`);
 }
 
-const server = new McpServer({ name: "hoodpocket", version: "0.6.0" });
+const server = new McpServer({ name: "hoodpocket", version: "0.7.0" });
 
 function resolveCurrency(input: string): Address {
   const upper = input.trim().toUpperCase();
@@ -93,6 +94,7 @@ async function resolvePair(tokenInRaw: string, tokenOutRaw: string) {
       pools,
       tier: "official" as Tier,
       tierReasons: ["native ETH / USDG quote pair"],
+      isStock: false,
       inDecimals: isNative(tokenIn) ? 18 : USDG_DECIMALS,
       outDecimals: isNative(tokenOut) ? 18 : USDG_DECIMALS,
       inSymbol: isNative(tokenIn) ? "ETH" : "USDG",
@@ -128,6 +130,7 @@ async function resolvePair(tokenInRaw: string, tokenOutRaw: string) {
     pools: pairPools,
     tier: p.tier,
     tierReasons: p.tierReasons,
+    isStock: p.isStock,
     inDecimals: isQuoteCurrency(tokenIn) ? quoteDecimals : p.decimals,
     outDecimals: isQuoteCurrency(tokenOut) ? quoteDecimals : p.decimals,
     inSymbol: isQuoteCurrency(tokenIn) ? quoteSymbol : p.symbol,
@@ -179,6 +182,7 @@ server.registerTool(
       `reasons: ${p.tierReasons.join("; ")}`,
       `holders: ${p.holders ?? "unknown"}`,
       `price: ${p.priceUsd !== null ? `~$${p.priceUsd}` : "no feed"}`,
+      ...(p.isStock ? [usMarketStatus().detail] : []),
       `live pools (Uniswap V4): ${livePools.length} of ${p.pools.length}`,
       ...livePools
         .slice(0, 5)
@@ -208,17 +212,16 @@ server.registerTool(
     const amountIn = parseUnits(amount_in, pair.inDecimals);
     const { pool, amountOut } = await bestQuote(pair.pools, pair.tokenIn, amountIn);
     const tradeUsd = await usdValue(pair.tokenIn, amountIn, pair.inDecimals, pair.profilePools);
-    return {
-      content: [
-        {
-          type: "text",
-          text: [
-            `${amount_in} ${pair.inSymbol} -> ~${formatUnits(amountOut, pair.outDecimals)} ${pair.outSymbol} (~$${tradeUsd.toFixed(2)})`,
-            `pool: vs ${pool.quoteSymbol} | fee ${pool.fee / 10000}% | liquidity ${pool.liquidity}`,
-          ].join("\n"),
-        },
-      ],
-    };
+    const lines = [
+      `${amount_in} ${pair.inSymbol} -> ~${formatUnits(amountOut, pair.outDecimals)} ${pair.outSymbol} (~$${tradeUsd.toFixed(2)})`,
+      `pool: vs ${pool.quoteSymbol} | fee ${pool.fee / 10000}% | liquidity ${pool.liquidity}`,
+    ];
+    if (pair.isStock) {
+      const market = usMarketStatus();
+      lines.push(market.detail);
+      if (!market.open) lines.push(OFF_HOURS_WARNING);
+    }
+    return { content: [{ type: "text", text: lines.join("\n") }] };
   }
 );
 
@@ -255,6 +258,15 @@ server.registerTool(
     const tradeUsd = await usdValue(pair.tokenIn, amountIn, pair.inDecimals, pair.profilePools);
     checkTradeAllowed(pair.tier, tradeUsd, pair.tierReasons);
 
+    // Market-hours guardrail for official stock tokens.
+    const market = pair.isStock ? usMarketStatus() : null;
+    if (market && !market.open && config.policy.stocks.blockOffHoursTrades) {
+      throw new Error(
+        `Trade blocked: ${market.detail}. ${OFF_HOURS_WARNING} ` +
+          `The owner can allow off-hours stock trades by setting policy.stocks.blockOffHoursTrades to false.`
+      );
+    }
+
     const { pool, amountOut: quoted } = await bestQuote(pair.pools, pair.tokenIn, amountIn);
     const minOut = (quoted * BigInt(10_000 - (slippage_bps ?? 100))) / 10_000n;
 
@@ -288,6 +300,7 @@ server.registerTool(
             `sold: ${amount_in} ${pair.inSymbol}`,
             `received: ${received} ${pair.outSymbol}`,
             `tx: ${BLOCKSCOUT}/tx/${txHash}`,
+            ...(market && !market.open ? [`note: ${market.detail}. ${OFF_HOURS_WARNING}`] : []),
           ].join("\n"),
         },
       ],
@@ -561,10 +574,12 @@ server.registerTool(
     const lines = [
       `daily budget: $${config.policy.dailyBudgetUsd} (used ~$${spent.toFixed(2)}, remaining ~$${Math.max(0, config.policy.dailyBudgetUsd - spent).toFixed(2)})`,
       `tiers:`,
-      `  official (Robinhood stock tokens): ${config.policy.tiers.official.enabled ? `enabled, max $${config.policy.tiers.official.maxPerTradeUsd}/trade` : "disabled"}`,
+      `  official (Robinhood stock tokens): ${config.policy.tiers.official.enabled ? `enabled, max $${config.policy.tiers.official.maxPerTradeUsd}/trade` : "disabled"}${config.policy.stocks.blockOffHoursTrades ? " (blocked while the US market is closed)" : ""}`,
+      `  issuer (user-trusted RWA issuers, ${config.policy.trustedIssuers.length} registered): ${config.policy.tiers.issuer.enabled ? `enabled, max $${config.policy.tiers.issuer.maxPerTradeUsd}/trade` : "disabled"}`,
       `  established (${config.policy.minHolders}+ holders, price feed, live pool): ${config.policy.tiers.established.enabled ? `enabled, max $${config.policy.tiers.established.maxPerTradeUsd}/trade` : "disabled"}`,
       `  unknown (everything else): ${config.policy.tiers.unknown.enabled ? `enabled, max $${config.policy.tiers.unknown.maxPerTradeUsd}/trade` : "disabled"}`,
       `denylist: ${config.policy.denylist.length} address(es)`,
+      usMarketStatus().detail,
       ``,
       `x402 commerce (paid API requests): ${
         config.policy.commerce.enabled
