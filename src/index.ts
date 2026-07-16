@@ -51,7 +51,7 @@ if (wallet.source === "generated") {
   console.error(`hoodpocket: wallet ${wallet.address} (key from ${wallet.source})`);
 }
 
-const server = new McpServer({ name: "hoodpocket", version: "0.7.0" });
+const server = new McpServer({ name: "hoodpocket", version: "0.8.0" });
 
 function resolveCurrency(input: string): Address {
   const upper = input.trim().toUpperCase();
@@ -323,7 +323,7 @@ server.registerTool(
   "x402_discover",
   {
     description:
-      "Discover x402 pay-per-request APIs (agentic commerce). Without a URL: lists the known catalog, currently the Naven Marketplace on Robinhood Chain (crypto prices, DEX data, wallet intelligence, FX rates, flights, places, IP lookup; $0.001-$0.05 per call, settled in USDG). With a URL: probes it for free and returns the live payment terms (price, recipient, network) without paying. Always probe or check the catalog before x402_execute so the price is known.",
+      "Discover x402 pay-per-request APIs (agentic commerce). Without a URL: lists the known catalog: the hoodpocket Pocket API (token trust checks, pre-trade risk gates, US market status, RWA issuer verification; $0.001-$0.03 per call) and the Naven Marketplace (crypto prices, DEX data, wallet intelligence, FX rates, flights, places, IP lookup; $0.001-$0.05 per call), all on Robinhood Chain, settled in USDG. With a URL: probes it for free and returns the live payment terms (price, recipient, network) without paying. Always probe or check the catalog before x402_execute so the price is known.",
     inputSchema: {
       url: z.string().optional().describe("Endpoint to probe. Omit to list the catalog."),
       method: z.enum(["GET", "POST"]).optional(),

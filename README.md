@@ -95,7 +95,12 @@ Robinhood Chain launched as an RWA-first L2: the ~95 official stock tokens (AAPL
 
 Beyond trading, the pocket can pay for data. hoodpocket speaks [x402](https://docs.naven.network/getting-started/how-x402-payments-work), the HTTP 402 payment standard: an endpoint quotes its price in a 402 challenge, hoodpocket signs a USDG payment (EIP-3009, gasless for the wallet; the facilitator settles on-chain), retries the request, and returns the data.
 
-Out of the box the catalog covers the [Naven Marketplace](https://naven.network/marketplace) on Robinhood Chain: CoinGecko and CoinMarketCap market data, Nansen wallet intelligence, FX rates, flight search, place search, and IP lookup, at $0.001 to $0.05 per call. Any other x402 endpoint works too once its host is allowed.
+Out of the box the catalog covers two storefronts, both allowed by default:
+
+- **The Pocket API** (`x402.hoodpocket.com`): hoodpocket's own detection engine, sold to any agent. Token trust checks ($0.01), a pre-trade risk gate with executable price impact ($0.03), live US market status ($0.001), and RWA issuer verification ($0.02). POST only; probing is free. Yes, this wallet's tools and these endpoints share an engine: your agent already gets the classification locally for its own trades, and other agents can pay for the same read.
+- **The [Naven Marketplace](https://naven.network/marketplace)**: CoinGecko and CoinMarketCap market data, Nansen wallet intelligence, FX rates, flight search, place search, and IP lookup, at $0.001 to $0.05 per call.
+
+Any other x402 endpoint works too once its host is allowed.
 
 Commerce has its own guardrails, separate from the trading budget:
 
@@ -104,7 +109,7 @@ Commerce has its own guardrails, separate from the trading budget:
   "enabled": true,
   "maxPerRequestUsd": 0.25,
   "dailyBudgetUsd": 5,
-  "allowedHosts": ["api.naven.network"]
+  "allowedHosts": ["api.naven.network", "x402.hoodpocket.com"]
 }
 ```
 
@@ -181,6 +186,7 @@ Guardrails are enforced by this server's code before signing, not by the blockch
 - [x] Native ETH pairs (memecoins, Virtuals utility tokens)
 - [x] x402 agentic commerce: pay-per-request APIs settled in USDG (Naven Marketplace)
 - [x] RWA support: trusted-issuer registry + US market-hours guardrail for stock tokens
+- [x] Sell side: the detection engine as paid x402 endpoints (x402.hoodpocket.com), in the default catalog
 - [ ] Dividend / corporate-action surfacing for stock tokens (pending issuer docs on distribution mechanics)
 - [ ] Multi-hop routing for token-to-token trades
 - [ ] Batched pool-liquidity reads (multicall) for tokens with 100+ pools

@@ -100,7 +100,7 @@ const DEFAULT_POLICY: Policy = {
     enabled: true,
     maxPerRequestUsd: 0.25,
     dailyBudgetUsd: 5,
-    allowedHosts: ["api.naven.network"],
+    allowedHosts: ["api.naven.network", "x402.hoodpocket.com"],
   },
   acp: {
     enabled: false,

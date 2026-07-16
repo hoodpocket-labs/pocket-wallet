@@ -24,8 +24,49 @@ export interface CatalogEntry {
 }
 
 const NAVEN_API = "https://api.naven.network";
+const POCKET_API = "https://x402.hoodpocket.com";
 
 export const CATALOG: CatalogEntry[] = [
+  {
+    service: "hoodpocket",
+    name: "Token trust check",
+    method: "POST",
+    url: `${POCKET_API}/v1/trust`,
+    priceUsd: 0.01,
+    params: "body: address (token contract on Robinhood Chain)",
+    description:
+      "Trust tier (official / issuer / established / unknown) with the on-chain evidence: bytecode fingerprint, deployer, holders, live pools. Same engine as this wallet, callable by any agent.",
+  },
+  {
+    service: "hoodpocket",
+    name: "Pre-trade risk gate",
+    method: "POST",
+    url: `${POCKET_API}/v1/risk-gate`,
+    priceUsd: 0.03,
+    params: "body: address, trade_usd (intended position size)",
+    description:
+      "One GO / CAUTION / NO verdict before funds move: trust tier, executable price impact at the exact trade size, and US market-hours drift risk for stock tokens.",
+  },
+  {
+    service: "hoodpocket",
+    name: "US market status",
+    method: "POST",
+    url: `${POCKET_API}/v1/market-status`,
+    priceUsd: 0.001,
+    params: "none",
+    description:
+      "Live NYSE session status (open / closed / early close) from the computed trading calendar. Cheap enough to check before every stock-token trade.",
+  },
+  {
+    service: "hoodpocket",
+    name: "RWA issuer verify",
+    method: "POST",
+    url: `${POCKET_API}/v1/issuer-verify`,
+    priceUsd: 0.02,
+    params: "body: address",
+    description:
+      "Match a token to a known RWA issuer by runtime bytecode fingerprint and deployer address.",
+  },
   {
     service: "naven",
     name: "x402 test ping",
