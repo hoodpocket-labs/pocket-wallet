@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { formatUnits, getAddress, parseUnits, type Address } from "viem";
-import { BLOCKSCOUT, NATIVE, USDG, USDG_DECIMALS, account, erc20Abi, publicClient, wallet } from "./chain.js";
+import { BLOCKSCOUT, NATIVE, USDG, USDG_DECIMALS, account, erc20Abi, publicClient, wallet, walletClient } from "./chain.js";
 import { config } from "./config.js";
 import { findPairPools, profileToken, searchTokens, type PoolInfo, type Tier } from "./discovery.js";
 import {
@@ -12,13 +12,17 @@ import {
   checkAcpJobAllowed,
   checkPaymentAllowed,
   checkTradeAllowed,
+  checkTransferAllowed,
   commerceSpentUsdLast24h,
   paymentHistory,
   recordAcpJob,
   recordPayment,
   recordTrade,
+  recordTransfer,
   spentUsdLast24h,
   tradeHistory,
+  transferHistory,
+  transfersSpentUsdLast24h,
 } from "./guardrails.js";
 import { OFF_HOURS_WARNING, usMarketStatus } from "./markets.js";
 import { bestQuote, ethUsdPrice, isNative, swapV4, usdValue } from "./v4.js";
@@ -51,7 +55,7 @@ if (wallet.source === "generated") {
   console.error(`hoodpocket: wallet ${wallet.address} (key from ${wallet.source})`);
 }
 
-const server = new McpServer({ name: "hoodpocket", version: "0.8.0" });
+const server = new McpServer({ name: "hoodpocket", version: "0.9.0" });
 
 function resolveCurrency(input: string): Address {
   const upper = input.trim().toUpperCase();
@@ -301,6 +305,102 @@ server.registerTool(
             `received: ${received} ${pair.outSymbol}`,
             `tx: ${BLOCKSCOUT}/tx/${txHash}`,
             ...(market && !market.open ? [`note: ${market.detail}. ${OFF_HOURS_WARNING}`] : []),
+          ].join("\n"),
+        },
+      ],
+    };
+  }
+);
+
+server.registerTool(
+  "send",
+  {
+    description:
+      "Send funds from the pocket wallet to another address on Robinhood Chain (withdrawal). IRREVERSIBLE: a transfer to the wrong address cannot be undone, so restate the exact amount, token, and destination to the user and get their explicit confirmation before calling this. Guardrails run before signing: transfers must be enabled by policy, the recipient must pass the allowlist (when configured), and the USD value must fit the per-transfer limit and rolling 24h transfer budget. Blocked transfers cost nothing.",
+    inputSchema: {
+      token: z.string().describe("'ETH', 'USDG', or a token contract address to send"),
+      to: z.string().describe("Destination address (0x...). Must come from the user, never guessed."),
+      amount: z.string().describe("Human-readable amount to send, e.g. '0.05'"),
+    },
+  },
+  async ({ token, to, amount }) => {
+    const currency = resolveCurrency(token);
+    const destination = getAddress(to.trim());
+    if (destination.toLowerCase() === NATIVE.toLowerCase()) {
+      throw new Error("Refusing to send to the zero address: those funds would be burned.");
+    }
+    if (destination.toLowerCase() === account.address.toLowerCase()) {
+      throw new Error("Destination is this wallet itself; nothing to send.");
+    }
+
+    // Policy-enabled and allowlist checks need no chain data: run them before
+    // any RPC so a disabled policy or bad recipient fails fast and offline.
+    checkTransferAllowed(destination, 0);
+
+    // Symbol/decimals: quotes are known, arbitrary tokens are profiled (which
+    // also supplies the pools used to value the transfer in USD).
+    let symbol: string;
+    let decimals: number;
+    let pools: PoolInfo[] = [];
+    if (isNative(currency)) {
+      symbol = "ETH";
+      decimals = 18;
+    } else if (currency.toLowerCase() === USDG.toLowerCase()) {
+      symbol = "USDG";
+      decimals = USDG_DECIMALS;
+    } else {
+      const p = await profileToken(currency);
+      symbol = p.symbol;
+      decimals = p.decimals;
+      pools = p.pools;
+    }
+    const amountRaw = parseUnits(amount, decimals);
+    if (amountRaw <= 0n) throw new Error("amount must be greater than zero.");
+
+    // Value the transfer in USD and run the guardrails first: policy errors
+    // (disabled, allowlist, caps) are the actionable ones, balance comes after.
+    const transferUsd = await usdValue(currency, amountRaw, decimals, pools);
+    checkTransferAllowed(destination, transferUsd);
+
+    // Balance check, with a gas cushion when sending native ETH.
+    const balance = await balanceOf(currency);
+    const gasCushion = isNative(currency) ? parseUnits("0.0005", 18) : 0n;
+    if (balance < amountRaw + gasCushion) {
+      throw new Error(
+        `Insufficient ${symbol}: have ${formatUnits(balance, decimals)}, ` +
+          `need ${amount}${gasCushion > 0n ? " plus a small gas reserve" : ""}.`
+      );
+    }
+
+    const txHash = isNative(currency)
+      ? await walletClient.sendTransaction({ to: destination, value: amountRaw })
+      : await walletClient.writeContract({
+          address: currency,
+          abi: erc20Abi,
+          functionName: "transfer",
+          args: [destination, amountRaw],
+        });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+    if (receipt.status !== "success") {
+      throw new Error(`Transfer transaction reverted: ${BLOCKSCOUT}/tx/${txHash}`);
+    }
+
+    recordTransfer({
+      timestamp: Date.now(),
+      token: symbol,
+      amount,
+      to: destination,
+      usdValue: transferUsd,
+      txHash,
+    });
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: [
+            `Sent ${amount} ${symbol} (~$${transferUsd.toFixed(2)}) to ${destination}.`,
+            `tx: ${BLOCKSCOUT}/tx/${txHash}`,
           ].join("\n"),
         },
       ],
@@ -591,8 +691,18 @@ server.registerTool(
           ? `enabled, max $${config.policy.acp.maxPerJobUsd}/job, budget $${config.policy.acp.dailyBudgetUsd}/24h (used ~$${acpSpentUsdLast24h().toFixed(2)})`
           : "disabled"
       }`,
+      `outbound transfers (send): ${
+        config.policy.transfers.enabled
+          ? `enabled, max $${config.policy.transfers.maxPerTransferUsd}/transfer, budget $${config.policy.transfers.dailyBudgetUsd}/24h (used ~$${transfersSpentUsdLast24h().toFixed(2)})` +
+            (config.policy.transfers.allowlist.length > 0
+              ? `, allowlist: ${config.policy.transfers.allowlist.length} address(es)`
+              : ", any recipient")
+          : "disabled"
+      }`,
       ``,
-      `There is no withdrawal tool: funds can only rotate between currencies inside this wallet, minus x402 payments to allowed hosts and funded ACP jobs.`,
+      config.policy.transfers.enabled
+        ? `Withdrawals go through the send tool, gated by the transfer limits above.`
+        : `Withdrawals are disabled: funds can only rotate between currencies inside this wallet, minus x402 payments to allowed hosts and funded ACP jobs.`,
     ];
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }
@@ -610,8 +720,9 @@ server.registerTool(
     const trades = tradeHistory(limit ?? 20);
     const payments = paymentHistory(limit ?? 20);
     const acpJobs = acpJobHistory(limit ?? 20);
-    if (trades.length === 0 && payments.length === 0 && acpJobs.length === 0) {
-      return { content: [{ type: "text", text: "No trades, payments, or hires yet." }] };
+    const transfers = transferHistory(limit ?? 20);
+    if (trades.length === 0 && payments.length === 0 && acpJobs.length === 0 && transfers.length === 0) {
+      return { content: [{ type: "text", text: "No trades, payments, hires, or transfers yet." }] };
     }
     const lines = trades.map(
       (t) =>
@@ -633,6 +744,15 @@ server.registerTool(
         ...acpJobs.map(
           (j) =>
             `${new Date(j.timestamp).toISOString()}  $${j.usdValue} USDG -> ${j.provider} "${j.offering}" (job ${j.jobId})`
+        )
+      );
+    }
+    if (transfers.length > 0) {
+      lines.push(``, `outbound transfers:`);
+      lines.push(
+        ...transfers.map(
+          (t) =>
+            `${new Date(t.timestamp).toISOString()}  ${t.amount} ${t.token} -> ${t.to}  (~$${t.usdValue.toFixed(2)})  ${BLOCKSCOUT}/tx/${t.txHash}`
         )
       );
     }

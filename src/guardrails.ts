@@ -31,12 +31,23 @@ export interface AcpJobRecord {
   usdValue: number;
 }
 
+export interface TransferRecord {
+  timestamp: number;
+  token: string;
+  amount: string;
+  to: string;
+  usdValue: number;
+  txHash: string;
+}
+
 interface State {
   trades: TradeRecord[];
   /** x402 paid requests. Absent in state files written before v0.5. */
   payments?: PaymentRecord[];
   /** Virtuals ACP jobs. Absent in state files written before v0.6. */
   acpJobs?: AcpJobRecord[];
+  /** Outbound transfers. Absent in state files written before v0.9. */
+  transfers?: TransferRecord[];
 }
 
 const statePath = config.stateFile
@@ -103,6 +114,57 @@ export function acpSpentUsdLast24h(): number {
   return (loadState().acpJobs ?? [])
     .filter((j) => j.timestamp >= cutoff)
     .reduce((sum, j) => sum + j.usdValue, 0);
+}
+
+export function recordTransfer(transfer: TransferRecord): void {
+  const state = loadState();
+  (state.transfers ??= []).push(transfer);
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileSync(statePath, JSON.stringify(state, null, 2));
+}
+
+export function transferHistory(limit = 20): TransferRecord[] {
+  return (loadState().transfers ?? []).slice(-limit).reverse();
+}
+
+/** Outbound-transfer spend in the rolling 24h window. Tracked separately again. */
+export function transfersSpentUsdLast24h(): number {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  return (loadState().transfers ?? [])
+    .filter((t) => t.timestamp >= cutoff)
+    .reduce((sum, t) => sum + t.usdValue, 0);
+}
+
+/**
+ * The transfer guardrail check, run before an outbound transfer is signed.
+ * Throws a descriptive error the agent can read and adapt to.
+ */
+export function checkTransferAllowed(to: string, transferUsd: number): void {
+  const { transfers } = config.policy;
+  if (!transfers.enabled) {
+    throw new Error(
+      "Transfer blocked: outbound transfers are disabled by policy. " +
+        "The owner can enable policy.transfers.enabled in the config."
+    );
+  }
+  if (transfers.allowlist.length > 0 && !transfers.allowlist.includes(to.toLowerCase())) {
+    throw new Error(
+      `Transfer blocked: ${to} is not in the transfer allowlist. ` +
+        `The owner can extend policy.transfers.allowlist in the config.`
+    );
+  }
+  if (transferUsd > transfers.maxPerTransferUsd) {
+    throw new Error(
+      `Transfer blocked: ~$${transferUsd.toFixed(2)} exceeds the $${transfers.maxPerTransferUsd} per-transfer limit.`
+    );
+  }
+  const spent = transfersSpentUsdLast24h();
+  const remaining = transfers.dailyBudgetUsd - spent;
+  if (transferUsd > remaining) {
+    throw new Error(
+      `Transfer blocked: transfer budget is $${transfers.dailyBudgetUsd}/24h, ~$${spent.toFixed(2)} already sent, only ~$${Math.max(0, remaining).toFixed(2)} remaining.`
+    );
+  }
 }
 
 /**

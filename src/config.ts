@@ -27,6 +27,23 @@ export interface AcpPolicy {
   dailyBudgetUsd: number;
 }
 
+export interface TransfersPolicy {
+  /**
+   * Off by default: outbound transfers are the riskiest tool (a prompt-
+   * injected agent could drain the wallet), so withdrawals are opt-in.
+   */
+  enabled: boolean;
+  /** Max USD value of a single outbound transfer. */
+  maxPerTransferUsd: number;
+  /** Total USD the agent may send externally across any rolling 24h. */
+  dailyBudgetUsd: number;
+  /**
+   * Recipient addresses the agent may send to. Empty means any address;
+   * populate it to restrict withdrawals to known-good destinations.
+   */
+  allowlist: string[];
+}
+
 export interface TrustedIssuer {
   /** Display name, e.g. "Backed Finance". Shown in tier reasons. */
   name: string;
@@ -75,6 +92,8 @@ export interface Policy {
   commerce: CommercePolicy;
   /** Virtuals ACP agent-to-agent hiring limits. */
   acp: AcpPolicy;
+  /** Outbound transfer (withdrawal) limits. */
+  transfers: TransfersPolicy;
 }
 
 export interface PocketConfig {
@@ -107,6 +126,12 @@ const DEFAULT_POLICY: Policy = {
     maxPerJobUsd: 5,
     dailyBudgetUsd: 25,
   },
+  transfers: {
+    enabled: false,
+    maxPerTransferUsd: 100,
+    dailyBudgetUsd: 250,
+    allowlist: [],
+  },
 };
 
 /** Config search order: explicit env path, then cwd, then ~/.hoodpocket/config.json. */
@@ -138,6 +163,11 @@ function loadConfig(): PocketConfig {
       stocks: { ...DEFAULT_POLICY.stocks, ...raw.policy?.stocks },
       commerce: { ...DEFAULT_POLICY.commerce, ...raw.policy?.commerce },
       acp: { ...DEFAULT_POLICY.acp, ...raw.policy?.acp },
+      transfers: {
+        ...DEFAULT_POLICY.transfers,
+        ...raw.policy?.transfers,
+        allowlist: (raw.policy?.transfers?.allowlist ?? []).map((a) => a.toLowerCase()),
+      },
     },
   };
 }
